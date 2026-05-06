@@ -132,5 +132,13 @@ LANG=pt-BR
 - Schema base: `profiles/schema/profile.schema.json`.
 - O boot deve validar o YAML carregado contra este schema antes de iniciar sessao.
 - O schema cobre campos minimos; regras de dominio podem ter validacao complementar.
+- Exemplo valido minimo: `profiles/schema/valid_profile_minimal.yaml`.
+- Resultado esperado: validacao aprovada e inicializacao do perfil.
 - Exemplo invalido para teste: `profiles/schema/invalid_profile_example.yaml`.
 - Resultado esperado: falha de validacao com erro de schema (fail-fast de configuracao).
+
+### Checklist de Teste do Loader
+
+- [ ] Cenario 1 (valido): `ASSISTANT_PROFILE=valid_profile_minimal` com `profiles/schema/valid_profile_minimal.yaml` deve inicializar com sucesso.
+- [ ] Cenario 2 (schema invalido): usar `profiles/schema/invalid_profile_example.yaml` deve falhar com erro de schema.
+- [ ] Cenario 3 (id inexistente): `ASSISTANT_PROFILE` nao presente no catalogo deve falhar com `PROFILE_NOT_FOUND`.
