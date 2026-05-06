@@ -1,0 +1,85 @@
+profile:
+  id: medical
+  version: 1
+  description: "Perfil de assistente para anamnese guiada com prontuario parcial/final."
+
+runtime:
+  allow_runtime_switch: false
+  input_modes:
+    - voice
+    - text
+
+output_contract:
+  required_sections:
+    - resumo_do_caso
+    - perguntas_faltantes
+    - sinais_de_alerta
+    - hipoteses_possiveis
+    - exames_sugeridos_para_discutir
+    - orientacao_final_de_seguranca
+
+anamnesis:
+  required_fields:
+    - queixa_principal
+    - inicio
+    - duracao
+    - intensidade
+    - sintomas_associados
+    - medicacoes_em_uso
+    - alergias
+    - sinais_de_alerta_atuais
+  max_questions_per_cycle: 3
+  allow_partial_record: true
+  partial_record_requires_pending_notice: true
+
+stt:
+  prioritize: accuracy
+  confidence_threshold: 0.80
+  max_retries_below_threshold: 2
+  block_llm_below_threshold: true
+  fallback_to_manual_text_after_retries: true
+  manual_text_requires_short_confirmation: true
+  stt_latency_budget:
+    metric: p95
+    max_seconds: 2.5
+
+failure_policy:
+  mode: fail_soft
+  max_attempts_per_step: 2
+  short_timeout_enabled: true
+  on_stt_failure: ask_user_to_repeat
+  on_llm_failure: show_useful_message_and_keep_session_alive
+  log_error_by_module: true
+
+orchestrator_safety:
+  mandatory_red_flag_check_before_final_record: true
+  when_red_flag_detected:
+    include_alert_section: true
+    include_explicit_in_person_or_emergency_guidance: true
+
+slos:
+  initial_phase:
+    stt:
+      metric: wer
+      target_lte: 0.10
+      fixed_phrase_count: 50
+      phrase_distribution:
+        silence: 30
+        light_noise: 20
+    end_to_end_latency:
+      metric: p95
+      max_seconds: 4.0
+      measure_from: end_of_speech
+      measure_to: full_text_response
+    stability:
+      min_continuous_runtime_minutes: 30
+      technical_error_rate_lt: 0.02
+      technical_error_definition:
+        - stt_failure
+        - llm_timeout
+        - orchestrator_exception
+        - improper_empty_response
+
+compliance_notice:
+  not_a_final_diagnosis: true
+  suggest_professional_evaluation: true

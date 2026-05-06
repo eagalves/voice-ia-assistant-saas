@@ -1,0 +1,15 @@
+# Exemplo propositalmente invalido para testar fail-fast do loader.
+# Erros esperados:
+# - profile.id fora do padrao snake_case (tem hifen)
+# - profile.version invalido (0)
+# - runtime.input_modes contem valor nao permitido (chat)
+
+profile:
+  id: invalid-profile
+  version: 0
+  description: "Perfil invalido para teste de validacao"
+
+runtime:
+  allow_runtime_switch: false
+  input_modes:
+    - chat

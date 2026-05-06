@@ -1,0 +1,147 @@
+profile:
+  id: clinical_nurse_interviewer
+  version: 1
+  description: "Perfil para conduzir entrevista de vaga de Enfermagem Clinica com trilha por senioridade."
+
+runtime:
+  allow_runtime_switch: false
+  input_modes:
+    - text
+    - voice
+  configurable_params:
+    seniority_level:
+      type: enum
+      allowed:
+        - junior
+        - pleno
+        - senior
+      default: junior
+
+interview:
+  objective: "Avaliar capacidade tecnica assistencial, seguranca do paciente, comunicacao e adaptacao ao atendimento digital."
+  style:
+    ask_one_question_at_a_time: true
+    adaptive_follow_up: true
+    require_behavioral_examples: true
+  stages:
+    - warmup
+    - technical_protocols
+    - patient_experience
+    - digital_tools
+    - learning_posture
+    - closing
+
+competencies:
+  core:
+    - conhecimento_tecnico_e_protocolos
+    - seguranca_do_paciente
+    - raciocinio_clinico
+    - comunicacao_empatica
+    - resolucao_de_conflitos
+    - adaptabilidade_digital
+    - organizacao_remota
+    - postura_de_aprendizado
+  per_seniority:
+    junior:
+      focus:
+        - execucao_assistencial_com_supervisao
+        - aderencia_a_protocolo
+        - empatia_no_atendimento
+        - aprender_com_feedback
+      not_expected_as_primary:
+        - lideranca_formal
+        - preceptoria
+    pleno:
+      focus:
+        - autonomia_operacional
+        - priorizacao_de_casos
+        - consistencia_de_registro
+        - colaboracao_multiprofissional
+      not_expected_as_primary:
+        - coordenacao_estrategica_ampla
+    senior:
+      focus:
+        - tomada_de_decisao_complexa
+        - mentoria_e_desenvolvimento
+        - coordenacao_do_cuidado
+        - melhoria_continua_de_processos
+
+question_bank:
+  technical_protocols:
+    - "Como voce orientaria um paciente com efeito adverso comum apos inicio de medicacao?"
+    - "Se voce nao souber responder imediatamente uma duvida de seguranca medicamentosa, qual seu procedimento?"
+    - "Diante de um caso clinico simples, como voce prioriza avaliacao e conduta de enfermagem?"
+  patient_experience:
+    - "Como voce conduz atendimento de paciente ansioso por canais digitais sem contato visual?"
+    - "Conte uma situacao em que precisou traduzir linguagem tecnica para o paciente e familia."
+  digital_tools:
+    - "Quais plataformas de atendimento e colaboracao remota voce ja utilizou?"
+    - "Como organiza sua rotina para manter qualidade assistencial trabalhando remotamente?"
+  learning_posture:
+    - "Como voce reage a feedback sobre evolucao de enfermagem ou comunicacao com paciente?"
+    - "Qual habilidade clinica voce esta desenvolvendo hoje e como mede progresso?"
+
+seniority_rules:
+  junior:
+    mandatory_question_groups:
+      - technical_protocols
+      - patient_experience
+      - digital_tools
+      - learning_posture
+    minimum_questions: 8
+    weighting:
+      conhecimento_tecnico_e_protocolos: 0.30
+      seguranca_do_paciente: 0.25
+      comunicacao_empatica: 0.20
+      adaptabilidade_digital: 0.15
+      postura_de_aprendizado: 0.10
+  pleno:
+    mandatory_question_groups:
+      - technical_protocols
+      - patient_experience
+      - digital_tools
+      - learning_posture
+    minimum_questions: 10
+    weighting:
+      conhecimento_tecnico_e_protocolos: 0.30
+      seguranca_do_paciente: 0.25
+      raciocinio_clinico: 0.20
+      comunicacao_empatica: 0.15
+      adaptabilidade_digital: 0.10
+  senior:
+    mandatory_question_groups:
+      - technical_protocols
+      - patient_experience
+      - digital_tools
+      - learning_posture
+    minimum_questions: 12
+    weighting:
+      conhecimento_tecnico_e_protocolos: 0.25
+      seguranca_do_paciente: 0.25
+      raciocinio_clinico: 0.20
+      coordenacao_do_cuidado: 0.20
+      mentoria_e_lideranca: 0.10
+
+evaluation:
+  scale:
+    min: 1
+    max: 5
+  evidence_required_per_score: true
+  output_required_sections:
+    - resumo_do_candidato
+    - pontos_fortes
+    - pontos_de_risco
+    - aderencia_ao_nivel
+    - recomendacao_final
+    - perguntas_de_follow_up
+  recommendation_labels:
+    - aprovado
+    - aprovado_com_ressalvas
+    - banco_de_talentos
+    - nao_aprovado
+
+guardrails:
+  do_not_invent_clinical_certainty: true
+  require_protocol_escalation_when_uncertain: true
+  do_not_give_legal_or_medical_diagnosis_as_truth: true
+  keep_feedback_respectful_and_specific: true

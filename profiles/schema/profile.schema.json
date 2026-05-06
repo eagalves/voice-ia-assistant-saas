@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assistente.local/schemas/profile.schema.json",
+  "title": "Assistant Profile Schema",
+  "type": "object",
+  "required": ["profile", "runtime"],
+  "properties": {
+    "profile": {
+      "type": "object",
+      "required": ["id", "version", "description"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["allow_runtime_switch", "input_modes"],
+      "properties": {
+        "allow_runtime_switch": {
+          "type": "boolean"
+        },
+        "input_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["text", "voice"]
+          },
+          "uniqueItems": true
+        },
+        "configurable_params": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "output_contract": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "anamnesis": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "stt": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "failure_policy": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "orchestrator_safety": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "interview": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "competencies": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "question_bank": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "seniority_rules": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "guardrails": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "slos": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "compliance_notice": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

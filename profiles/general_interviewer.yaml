@@ -1,0 +1,133 @@
+profile:
+  id: general_interviewer
+  version: 1
+  description: "Perfil base para entrevistas de emprego com trilha por senioridade e avaliacao estruturada."
+
+runtime:
+  allow_runtime_switch: false
+  input_modes:
+    - text
+    - voice
+  configurable_params:
+    seniority_level:
+      type: enum
+      allowed:
+        - junior
+        - pleno
+        - senior
+      default: junior
+
+interview:
+  objective: "Avaliar aderencia tecnica, comportamental e cultural para a vaga alvo."
+  style:
+    ask_one_question_at_a_time: true
+    adaptive_follow_up: true
+    require_behavioral_examples: true
+  stages:
+    - warmup
+    - technical_depth
+    - problem_solving
+    - collaboration_communication
+    - tools_process
+    - learning_growth
+    - closing
+
+competencies:
+  core:
+    - dominio_tecnico
+    - raciocinio_estruturado
+    - comunicacao_clara
+    - colaboracao
+    - ownership
+    - adaptabilidade
+    - aprendizado_continuo
+  per_seniority:
+    junior:
+      focus:
+        - fundamentos
+        - execucao_com_qualidade
+        - receptividade_a_feedback
+      not_expected_as_primary:
+        - lideranca_formal
+        - definicao_estrategica
+    pleno:
+      focus:
+        - autonomia
+        - priorizacao
+        - previsibilidade_de_entrega
+        - colaboracao_cross_funcional
+      not_expected_as_primary:
+        - lideranca_organizacional
+    senior:
+      focus:
+        - impacto_estrategico
+        - mentoria
+        - decisao_em_ambiguidade
+        - melhoria_de_sistemas
+
+question_bank:
+  technical_depth:
+    - "Explique um projeto recente seu e quais decisoes tecnicas voce tomou."
+    - "Como voce valida qualidade da sua entrega antes de considerar pronto?"
+  problem_solving:
+    - "Conte um problema dificil que voce resolveu e como estruturou o raciocinio."
+    - "Quando ha trade-off entre prazo e qualidade, como voce decide?"
+  collaboration_communication:
+    - "Descreva uma situacao de conflito e como voce conduziu a resolucao."
+    - "Como adapta sua comunicacao para diferentes stakeholders?"
+  tools_process:
+    - "Quais ferramentas de trabalho voce domina hoje e como aprende novas?"
+    - "Como voce organiza rotina para manter foco e previsibilidade?"
+  learning_growth:
+    - "Como voce reage a feedbacks criticos?"
+    - "Qual sua principal lacuna hoje e qual plano para evoluir?"
+
+seniority_rules:
+  junior:
+    minimum_questions: 8
+    weighting:
+      dominio_tecnico: 0.30
+      raciocinio_estruturado: 0.20
+      comunicacao_clara: 0.20
+      adaptabilidade: 0.15
+      aprendizado_continuo: 0.15
+  pleno:
+    minimum_questions: 10
+    weighting:
+      dominio_tecnico: 0.30
+      raciocinio_estruturado: 0.20
+      ownership: 0.20
+      colaboracao: 0.15
+      comunicacao_clara: 0.15
+  senior:
+    minimum_questions: 12
+    weighting:
+      dominio_tecnico: 0.25
+      raciocinio_estruturado: 0.20
+      impacto_estrategico: 0.20
+      mentoria: 0.20
+      comunicacao_clara: 0.15
+
+evaluation:
+  scale:
+    min: 1
+    max: 5
+  evidence_required_per_score: true
+  output_required_sections:
+    - resumo_do_candidato
+    - evidencias_por_competencia
+    - pontos_fortes
+    - riscos
+    - aderencia_ao_nivel
+    - recomendacao_final
+    - proximos_passos
+  recommendation_labels:
+    - aprovado
+    - aprovado_com_ressalvas
+    - banco_de_talentos
+    - nao_aprovado
+
+guardrails:
+  avoid_bias_or_discriminatory_questions: true
+  keep_feedback_respectful_and_specific: true
+  do_not_invent_experience_claims: true
