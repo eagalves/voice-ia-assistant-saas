@@ -3,9 +3,9 @@ from pathlib import Path
 import os
 
 from dotenv import load_dotenv
-import yaml
 
 from assistente_voz.errors import ConfigError
+from assistente_voz.profile_loader import load_catalog
 
 
 @dataclass(frozen=True)
@@ -27,17 +27,10 @@ def _required_env(name: str) -> str:
 
 
 def _resolve_profile(profile_id: str, profiles_dir: Path) -> Path:
-    if not profiles_dir.exists():
-        raise ConfigError("PROFILE_DIR_MISSING", f"Profiles directory not found: {profiles_dir}")
-
-    for path in sorted(profiles_dir.glob("*.yaml")):
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        current_id = str((data.get("profile") or {}).get("id") or "").strip()
-        if current_id == profile_id:
-            return path
-
-    raise ConfigError("PROFILE_NOT_FOUND", f"Profile id not found: {profile_id}")
+    catalog = load_catalog(profiles_dir)
+    if profile_id not in catalog:
+        raise ConfigError("PROFILE_NOT_FOUND", f"Profile id not found: {profile_id}")
+    return catalog[profile_id].path
 
 
 def bootstrap_app(base_dir: Path | None = None) -> BootstrapResult:
