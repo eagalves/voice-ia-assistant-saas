@@ -244,6 +244,22 @@ Este aditivo registra evolucoes feitas apos a rodada base de issues 1-13.
 - OpenAI e Gemini coexistem no mesmo contrato de `LLMAdapter`/`LLMService`.
 - O boot valida chave por provider (`LLM_API_KEY` ou `GEMINI_API_KEY`).
 
+### LLM local planejado (nao implementado ainda)
+- Provider alvo: `LLM_PROVIDER=ollama`.
+- Transporte: HTTP local para `OLLAMA_BASE_URL`.
+- Formato: API de chat com mensagens estruturadas (`system`, `user`, `assistant`).
+- Modelos separados por provider:
+  - `OPENAI_MODEL`
+  - `GEMINI_MODEL`
+  - `OLLAMA_MODEL`
+- Fallback opcional por chamada:
+  - `LLM_FALLBACK_ENABLED=1`
+  - `LLM_FALLBACK_PROVIDER=gemini|openai`
+- Regra de fallback: apenas para erros tecnicos de disponibilidade do provider primario.
+- Notificacao em desenvolvimento: exibir aviso de fallback quando `LLM_NOTIFY_FALLBACK=1`.
+- Retries permanecem globais em `LLM_RETRIES`; timeout do Ollama fica especifico em `OLLAMA_TIMEOUT_S`.
+- A resposta do servico deve expor provider e modelo realmente usados.
+
 ### Captura e transcricao em tempo real
 - `AudioInput` recebeu `MicrophoneSource` com fallback de sample rate para melhorar compatibilidade no Windows.
 - Foi adicionado um pipeline de streaming em `live_caption` com 3 threads:

@@ -8,7 +8,7 @@ O usuário precisa de um assistente de voz local que capture fala pelo microfone
 
 ## Solution
 
-Um aplicativo Python local com 8 módulos coesos e de baixo acoplamento: AudioInput, STTAdapter, ConversationState, LLMAdapter, Orchestrator, TextUI, Config e Logger. O comportamento de domínio é encapsulado em arquivos YAML de perfil, carregados no boot por um loader com validação estrita. O Orchestrator conhece apenas contratos abstratos; as implementações concretas (Whisper local, OpenAI GPT-4o) são injetadas por configuração. O fluxo registra quem falou por mensagem usando papéis de participante definidos por perfil.
+Um aplicativo Python local com 8 módulos coesos e de baixo acoplamento: AudioInput, STTAdapter, ConversationState, LLMAdapter, Orchestrator, TextUI, Config e Logger. O comportamento de domínio é encapsulado em arquivos YAML de perfil, carregados no boot por um loader com validação estrita. O Orchestrator conhece apenas contratos abstratos; as implementações concretas (Whisper local, OpenAI GPT-4o) são injetadas por configuração. O fluxo registra quem falou por mensagem usando papéis de participante definidos por perfil. Como extensao planejada, o sistema tambem deve suportar LLM local via Ollama, com fallback tecnico opcional para provider por API durante desenvolvimento.
 
 ---
 
@@ -93,6 +93,9 @@ Um aplicativo Python local com 8 módulos coesos e de baixo acoplamento: AudioIn
 - Implementação `ApiLLM` via OpenAI GPT-4o no MVP.
 - System prompt construído a partir das regras do perfil ativo.
 - Política de falha: até 2 tentativas com timeout curto; em falha, exibir mensagem útil e manter sessão ativa.
+- Extensao planejada: `OllamaLLM` com `LLM_PROVIDER=ollama`, usando API HTTP local e mensagens estruturadas.
+- Fallback planejado: provider secundario opcional por chamada (`LLM_FALLBACK_PROVIDER`) apenas para erros tecnicos de disponibilidade do provider primario.
+- Observabilidade planejada: resposta do LLM deve informar provider e modelo efetivamente utilizados, inclusive quando houver fallback.
 
 **Orchestrator**
 - Fluxo: receber áudio → STT → atualizar ConversationState → LLM → entregar resposta à UI → registrar métricas.
@@ -133,6 +136,19 @@ Um aplicativo Python local com 8 módulos coesos e de baixo acoplamento: AudioIn
 - STT: pedir repetição ao usuário.
 - LLM: mostrar mensagem útil, manter sessão.
 - Após 2 falhas de STT: fallback para texto manual com confirmação curta obrigatória antes de seguir.
+- Extensao planejada para LLM local: quando `LLM_FALLBACK_ENABLED=1`, permitir fallback por chamada de `ollama` para provider secundario apenas em erros tecnicos de disponibilidade (ex.: conexao recusada, timeout, modelo inexistente, servidor fora do ar).
+- Em ambiente de desenvolvimento, quando `LLM_NOTIFY_FALLBACK=1`, exibir aviso explicito de fallback; fora disso, manter pelo menos log estruturado.
+
+### Configuracao planejada para LLM local + fallback
+- Providers explicitos: `openai`, `gemini`, `ollama`.
+- Modelos por provider: `OPENAI_MODEL`, `GEMINI_MODEL`, `OLLAMA_MODEL`.
+- Variaveis planejadas:
+	- `LLM_PROVIDER`
+	- `LLM_FALLBACK_PROVIDER`
+	- `LLM_FALLBACK_ENABLED`
+	- `LLM_NOTIFY_FALLBACK`
+	- `OLLAMA_BASE_URL`
+	- `OLLAMA_TIMEOUT_S`
 
 ---
 

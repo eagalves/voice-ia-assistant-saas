@@ -500,3 +500,48 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - [ ] Chaves antigas revogadas e novas chaves em uso.
 - [ ] Nenhum segredo presente em arquivos versionados.
 - [ ] Procedimento de rotacao documentado no repo.
+
+## Issue 18 - Suporte Planejado a LLM Local via Ollama com Fallback Tecnico
+
+**Type:** AFK
+**Blocked by:** Issue 15
+**Status:** Planned
+**Prioridade:** Alta
+
+### Objetivo
+- Permitir uso de LLM local no proprio PC durante desenvolvimento, sem remover suporte a providers por API.
+
+### Decisoes fechadas
+- Provider explicito: `LLM_PROVIDER=ollama`.
+- Fallback opcional e por chamada: `LLM_FALLBACK_PROVIDER=<provider>`.
+- Fallback acionado apenas para erros tecnicos de disponibilidade.
+- Aviso de fallback visivel em desenvolvimento quando `LLM_NOTIFY_FALLBACK=1`.
+- Modelos separados por provider (`OPENAI_MODEL`, `GEMINI_MODEL`, `OLLAMA_MODEL`).
+- Integracao no nivel de `LLMService`, nao apenas no `voice_cli`.
+- Ollama usando API HTTP local com mensagens estruturadas.
+- Retries globais via `LLM_RETRIES`; timeout proprio via `OLLAMA_TIMEOUT_S`.
+
+### Configuracao alvo
+- `LLM_PROVIDER=ollama`
+- `LLM_FALLBACK_PROVIDER=gemini`
+- `LLM_FALLBACK_ENABLED=1`
+- `LLM_NOTIFY_FALLBACK=1`
+- `OLLAMA_BASE_URL=http://localhost:11434`
+- `OLLAMA_MODEL=qwen2.5:3b`
+- `OLLAMA_TIMEOUT_S=30`
+- `GEMINI_MODEL=gemini-2.0-flash`
+- `OPENAI_MODEL=gpt-4o`
+
+### Riscos tecnicos
+- Bootstrap aceitar combinacoes invalidas de provider/fallback/modelo.
+- Fallback mascarar bugs logicos se classificar erro tecnico de forma frouxa.
+- Resposta final nao expor provider/modelo reais e dificultar debug.
+- Contrato de mensagens do Ollama divergir dos providers remotos.
+
+### Criterio de aceite
+- [ ] `LLM_PROVIDER=ollama` funciona no mesmo `LLMService.from_env`.
+- [ ] Fallback para `gemini` ocorre apenas em erro tecnico de disponibilidade.
+- [ ] Aviso explicito de fallback aparece em ambiente de desenvolvimento.
+- [ ] Resposta carrega provider e modelo realmente utilizados.
+- [ ] Documentacao de `.env.example` cobre configuracao de Ollama e fallback.
+- [ ] Testes automatizados cobrem primario local, fallback tecnico e ausencia de fallback em erro logico.
