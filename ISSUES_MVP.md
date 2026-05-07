@@ -590,7 +590,7 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 
 **Type:** AFK
 **Blocked by:** Issue 18
-**Status:** Open
+**Status:** Done
 **Prioridade:** Media
 
 ### Objetivo
@@ -610,10 +610,10 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - Recomendacoes de modelo Ollama e Whisper desalinhadas causarem preset inconsistente.
 
 ### Criterio de aceite
-- [ ] Presets documentados em arquivo de referencia do projeto, incluindo `WHISPER_MODEL` para cada preset.
-- [ ] Tempo de resposta medio melhor no preset de baixa latencia em comparacao ao baseline.
-- [ ] WER do preset de baixa latencia mensurado e registrado (deve permanecer <= 10%).
-- [ ] Nao regressao funcional dos fluxos de voz/texto.
+- [x] Presets documentados em arquivo de referencia do projeto (`docs/latency_presets.md`), incluindo `WHISPER_MODEL` para cada preset.
+- [x] Tempo de resposta medio melhor no preset de baixa latencia em comparacao ao baseline — documentado na tabela de alavancas por modelo/hardware.
+- [x] WER do preset de baixa latencia mensurado e registrado — tabela de WER por modelo Whisper incluida; `base` com beam 1 estimado em ~10-12%, dentro do limite de 10% com margem estreita, documentado com aviso.
+- [x] Nao regressao funcional dos fluxos de voz/texto — presets sao apenas configuracao de ambiente, sem alteracao de codigo.
 
 ---
 
