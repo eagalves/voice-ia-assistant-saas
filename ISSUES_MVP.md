@@ -619,30 +619,46 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 
 ## Issue 22 - Fallback Silencioso de Sample Rate no Windows
 
-**Type:** Bug
+**Type:** Observabilidade
 **Blocked by:** None
-**Status:** Open
+**Status:** Done
 **Prioridade:** Alta
 
-### Problema
-- `MicrophoneSource` aplica fallback de sample rate automaticamente no Windows quando o dispositivo nao suporta a taxa solicitada.
-- Se o sample rate resultante for diferente de 16 kHz (requerido pelo Whisper), a qualidade de transcricao degrada silenciosamente sem nenhum aviso no log ou na UI.
-- O resampling para 16 kHz e mencionado no adaptador STT, mas nao ha garantia documentada de que ele e sempre aplicado quando o sample rate capturado diverge.
+### Diagnostico (pos-implementacao)
+O problema original foi classificado como bug de dados, mas a investigacao revelou que o caminho
+principal de producao (`voice_cli` -> `StreamingTranscriber` -> `_safe_transcribe`) ja fazia o
+resampling corretamente: `_safe_transcribe` recebe o `sr` real da fonte, chama `_to_float32(buf,
+sample_rate=sr)` e passa o array resultante ao backend com `_input_sample_rate=16000` para evitar
+double-resample. A qualidade de transcricao **nao estava degradada** nesse fluxo.
 
-### O que fazer
-- Adicionar log de nivel `WARNING` sempre que o sample rate efetivo for diferente do requerido (16 kHz).
-- Garantir que o pipeline aplica resampling explicito para 16 kHz antes de enviar ao STT, independentemente do sample rate de captura.
-- Registrar no Logger/Metrics o sample rate efetivo por sessao para rastreamento.
-- Adicionar teste que simula captura em sample rate diferente de 16 kHz e valida que o audio entregue ao STT sempre esta em 16 kHz.
+O que de fato estava ausente era **observabilidade**: quando o dispositivo caia em fallback (ex.:
+48 kHz no Windows), nenhum sinal aparecia nos logs em producao — apenas `print` gateado por
+`debug=True`.
 
-### Riscos tecnicos
-- Resampling de baixa qualidade introduzir artefatos de audio que reduzem acuracia do STT.
-- Divergencia silenciosa entre sample rate capturado e processado dificultar debugging de WER ruim em campo.
+Existe um bug latente real em rota alternativa: se `STTService.transcribe()` for chamado
+diretamente com `audio_bytes` de um `AudioSegment` capturado em taxa diferente de 16 kHz, o
+`FasterWhisperBackend._input_sample_rate` permanece em 16000 e o audio nao e resamplado —
+resultando em transcricao de voz em velocidade 3x incorreta. Esse cenario esta coberto pela
+**Issue 30**.
 
-### Casos de teste minimos
-- Captura simulada em 44100 Hz deve resultar em audio de 16 kHz entregue ao STT.
-- Log de WARNING deve ser emitido quando sample rate de captura diferir de 16 kHz.
-- WER nao deve regredir com resampling ativo em comparacao a captura nativa em 16 kHz.
+### O que foi feito
+- Adicionado `STT_REQUIRED_SAMPLE_RATE = 16000` como constante explicita em `audio_capture.py`.
+- `MicrophoneSource.open()` emite `WARNING` quando o dispositivo rejeita a taxa solicitada (fallback).
+- `MicrophoneSource.open()` emite `WARNING` quando a taxa efetiva difere de `STT_REQUIRED_SAMPLE_RATE`.
+- `MicrophoneSource.open()` emite `INFO` com dispositivo e taxa efetiva em toda abertura bem-sucedida.
+- Prints de debug substituidos por `_logger.debug()` (sem gate de `self._debug`).
+
+### Casos de teste (todos passando em `tests/test_issue22_sample_rate.py`)
+- [x] `_to_float32` reamosta 44100 Hz para ~16000 amostras.
+- [x] `_to_float32` reamosta 48000 Hz para exatamente 16000 amostras.
+- [x] `_to_float32` nao altera contagem de amostras ja em 16 kHz.
+- [x] Saida de `_to_float32` esta em [-1, 1].
+- [x] WARNING emitido quando dispositivo rejeita 16 kHz e aceita 48 kHz.
+- [x] WARNING menciona a taxa solicitada rejeitada.
+- [x] INFO registra taxa efetiva em toda abertura bem-sucedida.
+- [x] Nenhum WARNING de mismatch quando dispositivo aceita 16 kHz diretamente.
+- [x] `sample_rate` do source reflete a taxa real apos fallback.
+- [x] `_safe_transcribe` entrega ao backend exatamente 16000 amostras quando audio foi capturado em 48 kHz.
 
 ---
 
@@ -860,3 +876,41 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - Trechos agrupados devem registrar auditoria indicando que foram consolidados.
 - Revisao concluida com agrupamento deve gerar prontuario final valido.
 - Auto-atribuicao deve registrar log de auditoria com score e decisao tomada.
+
+---
+
+## Issue 30 - STTService Direto Ignora Sample Rate do AudioSegment
+
+**Type:** Bug
+**Blocked by:** None
+**Status:** Open
+**Prioridade:** Alta
+
+### Problema
+O caminho principal de producao (`StreamingTranscriber` -> `_safe_transcribe`) faz o resampling
+corretamente passando o `sr` real da fonte. Porem, `STTService.transcribe(audio)` e uma API
+publica que aceita `bytes` sem parametro de taxa. Se um chamador passar `AudioSegment.audio_bytes`
+capturado em taxa diferente de 16 kHz (ex.: 48 kHz apos fallback no Windows), o
+`FasterWhisperBackend` usa `_input_sample_rate=16000` (valor default) e nao aplica resampling —
+o Whisper recebe audio tocando em velocidade 3x incorreta, degradando o WER silenciosamente.
+
+O problema existe porque `STTService.transcribe` nao tem como saber a taxa real do audio recebido.
+Qualquer integracao futura que use `AudioCapture` + `STTService` diretamente (sem passar por
+`live_caption._safe_transcribe`) seria afetada.
+
+### O que fazer
+- Adicionar parametro opcional `sample_rate: int | None = None` a `STTService.transcribe()`.
+- Quando `sample_rate` for informado e diferente de 16000, chamar `_to_float32(audio, sample_rate)` antes de passar ao backend, e entregar ao backend um array ja em 16 kHz com `input_sample_rate=16000`.
+- Expor `sample_rate` tambem no contrato `WhisperBackend.transcribe()` para manter consistencia.
+- Atualizar `AudioCapture` ou documentar explicitamente que chamadores de `STTService` sao responsaveis por informar a taxa do `AudioSegment`.
+- Adicionar `_logger.warning` em `STTService.transcribe()` quando `sample_rate` nao e informado e o backend esta configurado com taxa diferente de 16 kHz.
+
+### Riscos tecnicos
+- Mudanca de assinatura de `STTService.transcribe()` quebrar testes existentes que passam apenas `audio`.
+- Chamadores que ja usam `_safe_transcribe` receberem double-resample se nao adaptarem o fluxo.
+
+### Casos de teste minimos
+- `STTService.transcribe(audio_48khz, sample_rate=48000)` deve produzir transcricao equivalente a `STTService.transcribe(audio_16khz)` para o mesmo conteudo de fala.
+- `STTService.transcribe(audio_48khz)` sem `sample_rate` deve emitir `WARNING` indicando taxa desconhecida.
+- `WhisperBackend` stub deve ser compativel com a nova assinatura.
+- Testes existentes de `STTService` nao devem regredir.

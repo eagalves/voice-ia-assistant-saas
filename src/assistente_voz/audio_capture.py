@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Iterator
+
+_logger = logging.getLogger(__name__)
+
+# Sample rate required by Whisper — used to detect mismatch at capture time.
+STT_REQUIRED_SAMPLE_RATE = 16000
 
 # ── data contracts ─────────────────────────────────────────────────────────────
 
@@ -235,8 +241,8 @@ class MicrophoneSource(AudioSource):
         self._queue = queue.Queue(maxsize=256)
 
         def _callback(indata, frames, time_info, status):  # noqa: ARG001
-            if status and self._debug:
-                print(f"[mic] status={status}", flush=True)
+            if status:
+                _logger.debug("MicrophoneSource: portaudio status=%s", status)
             try:
                 # indata is a CFFI buffer of int16; copy to bytes for thread safety
                 self._queue.put_nowait(bytes(indata))
@@ -258,13 +264,31 @@ class MicrophoneSource(AudioSource):
                 )
                 self._stream.start()
                 self.sample_rate = rate
-                if self._debug:
-                    print(f"[mic] opened device={self._device} rate={rate}", flush=True)
+                _logger.info(
+                    "MicrophoneSource: opened device=%s sample_rate=%d Hz",
+                    self._device,
+                    rate,
+                )
+                if rate != self._requested_rate:
+                    _logger.warning(
+                        "MicrophoneSource: requested sample rate %d Hz was rejected by the "
+                        "device; using fallback %d Hz — STT pipeline will resample to %d Hz",
+                        self._requested_rate,
+                        rate,
+                        STT_REQUIRED_SAMPLE_RATE,
+                    )
+                if rate != STT_REQUIRED_SAMPLE_RATE:
+                    _logger.warning(
+                        "MicrophoneSource: effective sample rate %d Hz differs from the "
+                        "%d Hz required by Whisper — resampling is applied automatically "
+                        "by live_caption._safe_transcribe before transcription",
+                        rate,
+                        STT_REQUIRED_SAMPLE_RATE,
+                    )
                 return
             except Exception as exc:  # noqa: BLE001 — PortAudioError lives in a sub-package
                 last_exc = exc
-                if self._debug:
-                    print(f"[mic] rate {rate} rejected: {exc}", flush=True)
+                _logger.debug("MicrophoneSource: rate %d Hz rejected: %s", rate, exc)
                 self._stream = None
         raise RuntimeError(
             f"Could not open microphone with any sample rate {rates_to_try}: {last_exc}"

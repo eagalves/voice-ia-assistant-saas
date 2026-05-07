@@ -281,7 +281,8 @@ Este aditivo registra evolucoes feitas apos a rodada base de issues 1-13.
 - Issue 19: testes de regressao para assertividade do perfil medical (anti-inferencia). **[Done]**
 - Issue 20: encerramento limpo do worker de LLM no `voice_cli`.
 - Issue 21: presets operacionais de latencia (local vs qualidade) — incluindo `WHISPER_MODEL` como principal alavanca de latencia STT.
-- Issue 22: log e garantia de resampling quando sample rate de captura divergir de 16 kHz no Windows.
+- Issue 22: observabilidade de fallback de sample rate no Windows — WARNING/INFO adicionados ao `MicrophoneSource`. **[Done]**
+- Issue 30: bug latente em `STTService.transcribe()` direto — falta parametro `sample_rate` para audio capturado fora de 16 kHz.
 - Issue 23: classificador formal de erros tecnicos vs logicos no fallback de LLM (`LLM_ERR_UNAVAILABLE` / `LLM_ERR_LOGICAL`).
 - Issue 24: backoff exponencial com jitter nos retries de LLM (`LLM_RETRY_BACKOFF_BASE_S`, `LLM_RETRY_BACKOFF_MAX_S`).
 - Issue 25: limite de contexto por tokens alem de numero de mensagens (`MAX_CONTEXT_TOKENS`).
