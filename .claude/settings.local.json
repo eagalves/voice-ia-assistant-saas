@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\evandro\\\\OneDrive\\\\Documentos\\\\Projetos\\\\assistente_de_voz\" -Recurse -File)",
+      "Bash(Select-Object FullName)",
+      "Bash(Sort-Object FullName)",
+      "Bash(python -m pytest tests/test_issue22_sample_rate.py -v)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_issue22_sample_rate.py -v)"
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -9,6 +10,8 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from assistente_voz.conversation_state import ConversationState
+
+_logger = logging.getLogger(__name__)
 
 # ── data contracts ─────────────────────────────────────────────────────────────
 
@@ -35,6 +38,16 @@ class LLMBackend(Protocol):
 
 class LLMTechnicalError(Exception):
     """Technical availability error that can trigger configured fallback."""
+
+
+class LLMErrorCode:
+    """Stable codes for LLM error classification (Issue 23)."""
+
+    UNAVAILABLE = "LLM_ERR_UNAVAILABLE"
+    # Connection refused, timeout, server 5xx — eligible for retry and fallback.
+
+    LOGICAL = "LLM_ERR_LOGICAL"
+    # Bad request, auth failure, invalid payload — do NOT retry or fallback.
 
 
 # ── OpenAI production backend ─────────────────────────────────────────────────
@@ -173,23 +186,96 @@ class FallbackBackend:
         try:
             return self._primary.complete(messages)
         except Exception as exc:  # noqa: BLE001
-            if not self._enabled or not _is_technical_error(self._primary.provider_name, exc):
+            error_code = _classify_error(exc)
+            _logger.debug(
+                "LLM primary %s failed: code=%s exc=%s",
+                self._primary.provider_name, error_code, type(exc).__name__,
+            )
+            if not self._enabled or error_code != LLMErrorCode.UNAVAILABLE:
                 raise
             if self._notify_fallback:
-                print(
-                    f"[llm-fallback] {self._primary.provider_name} -> {self._fallback.provider_name}: "
-                    f"{type(exc).__name__}",
-                    flush=True,
+                _logger.warning(
+                    "LLM fallback: %s -> %s [%s: %s]",
+                    self._primary.provider_name,
+                    self._fallback.provider_name,
+                    error_code,
+                    type(exc).__name__,
+                )
+            else:
+                _logger.info(
+                    "LLM fallback: %s -> %s [%s]",
+                    self._primary.provider_name,
+                    self._fallback.provider_name,
+                    error_code,
                 )
             return self._fallback.complete(messages)
 
 
-def _is_technical_error(provider: str, exc: Exception) -> bool:
+def _get_http_status(exc: Exception) -> int | None:
+    """Extract HTTP status code from an exception, regardless of SDK."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    if response is not None:
+        code = getattr(response, "status_code", None)
+        if isinstance(code, int):
+            return code
+    return None
+
+
+# HTTP status codes that signal transient server unavailability.
+_UNAVAILABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+# HTTP status codes that signal a logical/client error — no retry or fallback.
+# 404 is intentionally absent: "model not found" on Ollama is a technical error
+# and is already converted to LLMTechnicalError by OllamaBackend before reaching
+# this classifier. Keeping 404 out of both sets lets provider-specific handling
+# (LLMTechnicalError or SDK exception types) decide its semantics.
+_LOGICAL_HTTP_CODES = {400, 401, 403, 422}
+
+
+def _classify_error(exc: Exception) -> str:
+    """Return a stable LLMErrorCode for *exc*.
+
+    UNAVAILABLE  — transient availability failure; eligible for retry and fallback.
+    LOGICAL      — bad request, auth, or invalid payload; do not retry or fallback.
+
+    Defaults to LOGICAL when the error type is unknown to avoid masking bugs.
+    """
+    # Explicitly tagged by a backend
     if isinstance(exc, LLMTechnicalError):
-        return True
-    if provider == "ollama":
-        return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError, OSError))
-    return False
+        return LLMErrorCode.UNAVAILABLE
+
+    # Network-level errors — always transient, provider-agnostic
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return LLMErrorCode.UNAVAILABLE
+    if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError):
+        return LLMErrorCode.UNAVAILABLE
+
+    # HTTP status classification — works for urllib and any SDK that sets status_code
+    status = _get_http_status(exc)
+    if status is not None:
+        if status in _UNAVAILABLE_HTTP_CODES:
+            return LLMErrorCode.UNAVAILABLE
+        if status in _LOGICAL_HTTP_CODES:
+            return LLMErrorCode.LOGICAL
+
+    # OpenAI SDK (deferred to avoid hard dependency)
+    try:
+        import openai
+        if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+            return LLMErrorCode.UNAVAILABLE
+        if isinstance(exc, openai.APIStatusError):
+            if exc.status_code in _UNAVAILABLE_HTTP_CODES:
+                return LLMErrorCode.UNAVAILABLE
+            return LLMErrorCode.LOGICAL
+    except ImportError:
+        pass
+
+    # Unknown — assume logical so unexpected exceptions surface as bugs
+    return LLMErrorCode.LOGICAL
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -299,21 +385,30 @@ class LLMService:
     def complete(self, state: ConversationState) -> LLMResponse:
         """Call the LLM with the current conversation history.
 
-        Retries on transient errors up to ``max_retries`` times.
+        Retries only on LLM_ERR_UNAVAILABLE up to ``max_retries`` times.
+        Logical errors (LLM_ERR_LOGICAL) are raised immediately without retry.
         Raises the last exception if all retries fail.
         """
         messages = state.to_llm_messages()
         last_exc: Exception | None = None
+        total_attempts = self._max_retries + 1
 
-        for attempt in range(1, self._max_retries + 2):
+        for attempt in range(1, total_attempts + 1):
             t0 = time.perf_counter()
             try:
                 text, model, provider = self._backend.complete(messages)
                 latency_ms = (time.perf_counter() - t0) * 1000
                 return LLMResponse(text=text, model=model, latency_ms=latency_ms, provider=provider)
             except Exception as exc:  # noqa: BLE001
+                error_code = _classify_error(exc)
+                _logger.warning(
+                    "LLM attempt %d/%d failed: code=%s exc=%s",
+                    attempt, total_attempts, error_code, type(exc).__name__,
+                )
                 last_exc = exc
-                if attempt <= self._max_retries:
+                if error_code == LLMErrorCode.LOGICAL:
+                    break  # logical errors are not retriable
+                if attempt < total_attempts:
                     time.sleep(self._retry_delay)
 
         raise last_exc  # type: ignore[misc]

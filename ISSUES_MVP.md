@@ -666,7 +666,7 @@ resultando em transcricao de voz em velocidade 3x incorreta. Esse cenario esta c
 
 **Type:** Bug
 **Blocked by:** Issue 18
-**Status:** Open
+**Status:** Done
 **Prioridade:** Alta
 
 ### Problema
