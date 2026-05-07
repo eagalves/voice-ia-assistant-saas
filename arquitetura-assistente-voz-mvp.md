@@ -273,8 +273,9 @@ Este aditivo registra evolucoes feitas apos a rodada base de issues 1-13.
 - O fluxo STT final alimenta uma fila de requisicoes de LLM.
 - Um worker dedicado processa o LLM em paralelo para nao bloquear captura/transcricao.
 
-### Pendencia tecnica registrada
-- Remover artefato de worktree versionado acidentalmente em `.claude/worktrees/...`.
+### Higiene de repositorio aplicada
+- O artefato acidental de worktree em `.claude/worktrees/...` deixou de ser rastreado.
+- O caminho foi adicionado ao `.gitignore` para evitar recorrencia.
 
 ---
 

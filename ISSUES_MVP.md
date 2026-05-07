@@ -465,7 +465,7 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 
 **Type:** AFK
 **Blocked by:** None
-**Status:** Open
+**Status:** Done
 **Prioridade:** Alta
 
 ### Problema
@@ -477,9 +477,9 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - Validar que clone limpo nao referencia worktree interno.
 
 ### Criterio de aceite
-- [ ] Caminho de worktree nao aparece mais em `git ls-files`.
-- [ ] `git status` limpo apos remocao.
-- [ ] Regra preventiva em `.gitignore` revisada.
+- [x] Caminho de worktree nao aparece mais em `git ls-files`.
+- [x] `git status` limpo apos remocao.
+- [x] Regra preventiva em `.gitignore` revisada.
 
 ## Issue 17 - Seguranca de Credenciais em Ambiente e Historico
 
