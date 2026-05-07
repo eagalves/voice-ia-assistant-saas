@@ -378,3 +378,125 @@ Criar suite de aceite focada em comportamento externo e metas operacionais do MV
 - Rodar bateria de 50 frases e calcular WER consolidado.
 - Medir p95 ponta a ponta com amostra minima definida e reproducivel.
 - Executar sessao continua de 30 min e apurar taxa de erro tecnico.
+
+---
+
+## Registro Pos-Issue 13 (Track de modificacoes)
+
+Periodo rastreado: `2819b1b111b0f8a4a309fbf07a929b36cd629712` -> `88293d9261193952150027ad989f1ef9186fb2db`
+
+Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issues 1-13, se era necessario, e quais pendencias viraram novas issues.
+
+### Mudancas aplicadas e avaliacao de necessidade
+
+1. Suporte a provider Gemini (bootstrap + LLM factory + validacoes)
+- Arquivos: `src/assistente_voz/bootstrap.py`, `src/assistente_voz/llm.py`, `.env.example`, `tests/test_issue1_bootstrap.py`, `tests/test_issue6_llm.py`.
+- Status: **feito**.
+- Necessidade: **necessario** para alternancia de provider sem mudar orquestrador.
+
+2. Dependencias para Gemini e audio em tempo real
+- Arquivo: `pyproject.toml`.
+- Inclusoes: `google-genai`, `sounddevice`, `numpy`.
+- Status: **feito**.
+- Necessidade: **necessario** para o escopo de voz local + Gemini.
+
+3. Captura de microfone robusta (fallback de sample rate no Windows)
+- Arquivo: `src/assistente_voz/audio_capture.py` (`MicrophoneSource`).
+- Status: **feito**.
+- Necessidade: **necessario** para estabilidade de captura em diferentes dispositivos.
+
+4. Pipeline de legenda/transcricao em streaming
+- Arquivo: `src/assistente_voz/live_caption.py` (`StreamingTranscriber`).
+- Status: **feito**.
+- Necessidade: **necessario** para reduzir latencia e melhorar completude.
+
+5. STT atualizado para bytes/ndarray + tuning de confianca
+- Arquivo: `src/assistente_voz/stt.py`.
+- Status: **feito**.
+- Necessidade: **necessario** para suportar caminho streaming com melhor robustez.
+
+6. CLI de voz operacional e religacao do LLM
+- Arquivo: `src/assistente_voz/voice_cli.py`.
+- Cobertura: `tests/test_issue14_voice_cli.py`.
+- Status: **feito**.
+- Necessidade: **necessario** para remover regressao STT-only e restaurar resposta da IA.
+
+7. Artefato acidental versionado de worktree
+- Caminho: `.claude/worktrees/condescending-volhard-fe75a2`.
+- Status: **presente no historico**.
+- Necessidade: **nao necessario** para o produto; deve ser removido do controle de versao.
+
+### Novas issues abertas (pos-MVP base)
+
+## Issue 14 - Voice CLI com LLM Reativado e Testado
+
+**Type:** AFK
+**Blocked by:** Issue 13
+**Status:** Done
+
+### Entregas
+- Fluxo de voz agora envia transcricoes finais ao LLM.
+- Worker dedicado para LLM sem bloquear captura/STT.
+- Modo `--text` funcional para smoke test de LLM.
+- Testes adicionados em `tests/test_issue14_voice_cli.py`.
+
+### Criterio de aceite (resultado)
+- [x] `run_text_mode` retorna resposta de LLM.
+- [x] `run_voice_mode` responde para cada evento final de fala.
+- [x] Suite de testes verde apos alteracao.
+
+## Issue 15 - Suporte Multi-Provider de LLM (OpenAI + Gemini)
+
+**Type:** AFK
+**Blocked by:** Issue 6
+**Status:** Done
+
+### Entregas
+- `LLM_PROVIDER=api|openai|gemini` com validacao no boot.
+- `GEMINI_API_KEY` validada quando provider `gemini`.
+- `LLMService.from_env` com selecao de backend por provider.
+
+### Criterio de aceite (resultado)
+- [x] Provider Gemini selecionado por ambiente.
+- [x] Provider invalido falha com erro explicito.
+- [x] Testes de bootstrap e LLM atualizados.
+
+## Issue 16 - Higiene de Repositorio: Remover Worktree Acidental
+
+**Type:** AFK
+**Blocked by:** None
+**Status:** Open
+**Prioridade:** Alta
+
+### Problema
+- O caminho `.claude/worktrees/condescending-volhard-fe75a2` foi versionado como gitlink/subprojeto acidental.
+
+### O que fazer
+- Remover esse caminho do controle de versao.
+- Ajustar `.gitignore` para evitar recorrencia.
+- Validar que clone limpo nao referencia worktree interno.
+
+### Criterio de aceite
+- [ ] Caminho de worktree nao aparece mais em `git ls-files`.
+- [ ] `git status` limpo apos remocao.
+- [ ] Regra preventiva em `.gitignore` revisada.
+
+## Issue 17 - Seguranca de Credenciais em Ambiente e Historico
+
+**Type:** AFK
+**Blocked by:** None
+**Status:** Open
+**Prioridade:** Alta
+
+### Problema
+- Houve registro de commit com contexto de chave (`add gemini key`) e exposicao de credenciais em fluxo de trabalho.
+
+### O que fazer
+- Rotacionar chaves OpenAI/Gemini imediatamente.
+- Garantir que `.env` continue fora do versionamento.
+- Revisar historico recente para remover segredos, se aplicavel.
+
+### Criterio de aceite
+- [ ] Chaves antigas revogadas e novas chaves em uso.
+- [ ] Nenhum segredo presente em arquivos versionados.
+- [ ] Procedimento de rotacao documentado no repo.

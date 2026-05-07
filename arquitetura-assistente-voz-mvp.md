@@ -235,6 +235,33 @@ Com isso, voce comeca local e simples hoje, mantendo a porta aberta para trocar 
 
 ---
 
+## Aditivo Pos-Issues (estado implementado)
+
+Este aditivo registra evolucoes feitas apos a rodada base de issues 1-13.
+
+### LLM providers atualmente suportados
+- `LLM_PROVIDER=api|openai|gemini`.
+- OpenAI e Gemini coexistem no mesmo contrato de `LLMAdapter`/`LLMService`.
+- O boot valida chave por provider (`LLM_API_KEY` ou `GEMINI_API_KEY`).
+
+### Captura e transcricao em tempo real
+- `AudioInput` recebeu `MicrophoneSource` com fallback de sample rate para melhorar compatibilidade no Windows.
+- Foi adicionado um pipeline de streaming em `live_caption` com 3 threads:
+  1. produtor de audio,
+  2. segmentador VAD,
+  3. worker de transcricao.
+- O STT aceita bytes PCM e ndarray float32 (resample para 16 kHz no adaptador).
+
+### Voice CLI operacional
+- Existe entrypoint dedicado (`voice_cli`) para sessao de voz local.
+- O fluxo STT final alimenta uma fila de requisicoes de LLM.
+- Um worker dedicado processa o LLM em paralelo para nao bloquear captura/transcricao.
+
+### Pendencia tecnica registrada
+- Remover artefato de worktree versionado acidentalmente em `.claude/worktrees/...`.
+
+---
+
 ## Perfil Medical MVP + SLOs Operacionais
 
 ### Perfil por configuracao

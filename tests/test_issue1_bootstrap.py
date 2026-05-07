@@ -8,9 +8,11 @@ from assistente_voz.errors import ConfigError
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.delenv("ASSISTANT_PROFILE", raising=False)
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("SENIORITY_LEVEL", raising=False)
     monkeypatch.delenv("MEDICAL_SESSION_MODE", raising=False)
 
@@ -49,6 +51,30 @@ def test_bootstrap_fails_without_api_key_when_llm_provider_is_api(
 
     assert exc.value.code == "CONFIG_ENV_MISSING"
     assert "LLM_API_KEY" in exc.value.message
+
+
+def test_bootstrap_fails_without_api_key_when_llm_provider_is_gemini(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASSISTANT_PROFILE", "medical")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+
+    with pytest.raises(ConfigError) as exc:
+        bootstrap_app(base_dir=Path.cwd())
+
+    assert exc.value.code == "CONFIG_ENV_MISSING"
+    assert "GEMINI_API_KEY" in exc.value.message
+
+
+def test_bootstrap_loads_with_gemini_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSISTANT_PROFILE", "medical")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    result = bootstrap_app(base_dir=Path.cwd())
+
+    assert result.profile_id == "medical"
+    assert result.llm_provider == "gemini"
 
 
 def test_bootstrap_fails_with_invalid_seniority_level_for_interviewer(

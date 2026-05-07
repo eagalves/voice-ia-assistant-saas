@@ -2,10 +2,13 @@
 import pytest
 
 from assistente_voz.conversation_state import ConversationState
+import assistente_voz.llm as llm_module
 from assistente_voz.llm import (
+    GeminiBackend,
     LLMBackend,
     LLMResponse,
     LLMService,
+    OpenAIBackend,
     build_system_prompt,
 )
 
@@ -177,3 +180,25 @@ def test_complete_raises_after_all_retries_fail():
 
 def test_stub_backend_satisfies_protocol():
     assert isinstance(StubBackend(), LLMBackend)
+
+
+def test_from_env_selects_openai_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "api")
+    monkeypatch.setenv("LLM_API_KEY", "openai-key")
+    monkeypatch.setenv("LLM_MODEL", "gpt-4o")
+    svc = LLMService.from_env(MINIMAL_PROFILE)
+    assert isinstance(svc._backend, OpenAIBackend)
+
+
+def test_from_env_selects_gemini_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("LLM_MODEL", "gemini-2.0-flash")
+    svc = LLMService.from_env(MINIMAL_PROFILE)
+    assert isinstance(svc._backend, GeminiBackend)
+
+
+def test_from_env_raises_for_unsupported_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    with pytest.raises(ValueError):
+        LLMService.from_env(MINIMAL_PROFILE)

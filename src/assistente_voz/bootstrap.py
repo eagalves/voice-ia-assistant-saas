@@ -61,10 +61,17 @@ def bootstrap_app(base_dir: Path | None = None) -> BootstrapResult:
     _load_env()
 
     profile_id = _required_env("ASSISTANT_PROFILE")
-    llm_provider = _required_env("LLM_PROVIDER")
+    llm_provider = _required_env("LLM_PROVIDER").strip().lower()
 
-    if llm_provider == "api":
+    if llm_provider in {"api", "openai"}:
         _required_env("LLM_API_KEY")
+    elif llm_provider == "gemini":
+        _required_env("GEMINI_API_KEY")
+    elif llm_provider != "local":
+        raise ConfigError(
+            "CONFIG_ENV_INVALID",
+            "LLM_PROVIDER must be one of: api, openai, gemini, local",
+        )
 
     root = base_dir or Path.cwd()
     profile_entry = _resolve_profile_entry(profile_id=profile_id, profiles_dir=root / "profiles")

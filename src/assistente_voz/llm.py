@@ -55,6 +55,41 @@ class OpenAIBackend:
         return text, response.model
 
 
+class GeminiBackend:
+    """Production backend using Google Gemini SDK."""
+
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
+        self._api_key = api_key
+        self._model = model
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            from google import genai  # deferred import
+
+            self._client = genai.Client(api_key=self._api_key)
+        return self._client
+
+    def _messages_to_prompt(self, messages: list[dict]) -> str:
+        lines: list[str] = []
+        for msg in messages:
+            role = str(msg.get("role", "user")).upper()
+            content = str(msg.get("content", ""))
+            lines.append(f"[{role}] {content}")
+        return "\n\n".join(lines)
+
+    def complete(self, messages: list[dict]) -> tuple[str, str]:
+        client = self._get_client()
+        prompt = self._messages_to_prompt(messages)
+        response = client.models.generate_content(
+            model=self._model,
+            contents=prompt,
+        )
+        text = getattr(response, "text", "") or ""
+        model_name = getattr(response, "model", None) or self._model
+        return text, model_name
+
+
 # ── system prompt builder ─────────────────────────────────────────────────────
 
 
@@ -173,15 +208,28 @@ class LLMService:
     def from_env(cls, profile_data: dict) -> "LLMService":
         """Build LLMService from environment variables.
 
-        LLM_API_KEY   — OpenAI API key (required when LLM_PROVIDER=api)
-        LLM_MODEL     — model name (default: gpt-4o)
+        LLM_PROVIDER  — api|openai|gemini
+        LLM_API_KEY   — OpenAI API key (required for openai provider)
+        GEMINI_API_KEY — Gemini API key (required for gemini provider)
+        LLM_MODEL     — model name (gpt-4o or gemini-2.0-flash by default)
         LLM_RETRIES   — max retries (default: 2)
         """
-        api_key = os.environ["LLM_API_KEY"]
-        model = os.getenv("LLM_MODEL", "gpt-4o")
+        provider = os.getenv("LLM_PROVIDER", "api").strip().lower()
         max_retries = int(os.getenv("LLM_RETRIES", "2"))
+
+        if provider in {"api", "openai"}:
+            api_key = os.environ["LLM_API_KEY"]
+            model = os.getenv("LLM_MODEL", "gpt-4o")
+            backend: LLMBackend = OpenAIBackend(api_key=api_key, model=model)
+        elif provider == "gemini":
+            api_key = os.environ["GEMINI_API_KEY"]
+            model = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+            backend = GeminiBackend(api_key=api_key, model=model)
+        else:
+            raise ValueError("Unsupported LLM_PROVIDER. Use: api, openai or gemini")
+
         return cls(
-            backend=OpenAIBackend(api_key=api_key, model=model),
+            backend=backend,
             profile_data=profile_data,
             max_retries=max_retries,
         )
