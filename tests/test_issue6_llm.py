@@ -165,7 +165,7 @@ def test_complete_sends_full_history_to_backend():
 
 def test_complete_retries_on_transient_error():
     backend = FailThenSucceedBackend(fail_times=1)
-    svc = LLMService(backend=backend, profile_data=MINIMAL_PROFILE, max_retries=2, retry_delay_s=0)
+    svc = LLMService(backend=backend, profile_data=MINIMAL_PROFILE, max_retries=2, backoff_base_s=0)
     state = ConversationState()
     state.add("user", "olá")
 
@@ -177,7 +177,7 @@ def test_complete_retries_on_transient_error():
 
 def test_complete_raises_after_all_retries_fail():
     backend = FailingBackend(ConnectionError("offline"))
-    svc = LLMService(backend=backend, profile_data=MINIMAL_PROFILE, max_retries=2, retry_delay_s=0)
+    svc = LLMService(backend=backend, profile_data=MINIMAL_PROFILE, max_retries=2, backoff_base_s=0)
     state = ConversationState()
     state.add("user", "olá")
 

@@ -273,7 +273,7 @@ def test_fallback_logs_warning_when_notify_fallback_true(caplog):
 def test_logical_error_is_not_retried():
     """HTTP 400 (LOGICAL) nao deve gerar retentativa."""
     primary = FailingBackend(_http_error(400))
-    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, retry_delay_s=0)
+    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, backoff_base_s=0)
 
     with pytest.raises(urllib.error.HTTPError):
         svc.complete(_state_with_message())
@@ -284,7 +284,7 @@ def test_logical_error_is_not_retried():
 def test_unavailable_error_is_retried_up_to_max():
     """ConnectionError (UNAVAILABLE) deve ser retentado ate max_retries."""
     primary = FailingBackend(ConnectionError("offline"))
-    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, retry_delay_s=0)
+    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, backoff_base_s=0)
 
     with pytest.raises(ConnectionError):
         svc.complete(_state_with_message())
@@ -295,7 +295,7 @@ def test_unavailable_error_is_retried_up_to_max():
 def test_unavailable_error_succeeds_after_retry():
     """UNAVAILABLE resolvido na segunda tentativa deve retornar resposta normal."""
     primary = FailThenSucceedBackend(fail_times=1, error=ConnectionError("transient"))
-    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, retry_delay_s=0)
+    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, backoff_base_s=0)
 
     response = svc.complete(_state_with_message())
 
@@ -306,7 +306,7 @@ def test_unavailable_error_succeeds_after_retry():
 def test_warning_logged_on_each_failed_attempt(caplog):
     """WARNING deve ser emitido para cada tentativa falha."""
     primary = FailingBackend(ConnectionError("offline"))
-    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, retry_delay_s=0)
+    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=2, backoff_base_s=0)
 
     with caplog.at_level(logging.WARNING, logger="assistente_voz.llm"):
         with pytest.raises(ConnectionError):
@@ -321,7 +321,7 @@ def test_warning_logged_on_each_failed_attempt(caplog):
 def test_warning_contains_error_code(caplog):
     """WARNING deve mencionar o codigo de erro estavel."""
     primary = FailingBackend(ConnectionError("offline"))
-    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=0, retry_delay_s=0)
+    svc = LLMService(backend=primary, profile_data=MINIMAL_PROFILE, max_retries=0, backoff_base_s=0)
 
     with caplog.at_level(logging.WARNING, logger="assistente_voz.llm"):
         with pytest.raises(ConnectionError):

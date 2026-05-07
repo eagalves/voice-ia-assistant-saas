@@ -698,7 +698,7 @@ resultando em transcricao de voz em velocidade 3x incorreta. Esse cenario esta c
 
 **Type:** Performance / Confiabilidade
 **Blocked by:** Issue 23
-**Status:** Open
+**Status:** Done
 **Prioridade:** Alta
 
 ### Problema

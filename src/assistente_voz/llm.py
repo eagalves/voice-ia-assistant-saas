@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import time
 import urllib.error
 import urllib.request
@@ -285,6 +286,18 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _compute_backoff(retry_number: int, base_s: float, max_s: float) -> float:
+    """Return sleep duration for *retry_number* (1-indexed) with exponential backoff and jitter.
+
+    Formula: min(max_s, base_s * 2^(retry_number-1) +/- 20% jitter).
+    Cap is applied AFTER jitter so the result never exceeds max_s.
+    retry_number=1 → ~base_s, retry_number=2 → ~2*base_s, etc.
+    """
+    raw_delay = base_s * (2.0 ** (retry_number - 1))
+    jitter = raw_delay * random.uniform(-0.2, 0.2)
+    return max(0.0, min(max_s, raw_delay + jitter))
+
+
 def _should_notify_fallback() -> bool:
     env = os.getenv("APP_ENV", "dev").strip().lower()
     if env not in {"dev", "development", "local"}:
@@ -370,12 +383,14 @@ class LLMService:
         backend: LLMBackend,
         profile_data: dict,
         max_retries: int = 2,
-        retry_delay_s: float = 1.0,
+        backoff_base_s: float = 1.0,
+        backoff_max_s: float = 10.0,
     ) -> None:
         self._backend = backend
         self._profile_data = profile_data
         self._max_retries = max_retries
-        self._retry_delay = retry_delay_s
+        self._backoff_base_s = backoff_base_s
+        self._backoff_max_s = backoff_max_s
 
     def apply_profile(self, state: ConversationState) -> None:
         """Inject the profile's system prompt into *state*."""
@@ -385,7 +400,8 @@ class LLMService:
     def complete(self, state: ConversationState) -> LLMResponse:
         """Call the LLM with the current conversation history.
 
-        Retries only on LLM_ERR_UNAVAILABLE up to ``max_retries`` times.
+        Retries only on LLM_ERR_UNAVAILABLE up to ``max_retries`` times using
+        exponential backoff with jitter (base=backoff_base_s, cap=backoff_max_s).
         Logical errors (LLM_ERR_LOGICAL) are raised immediately without retry.
         Raises the last exception if all retries fail.
         """
@@ -401,15 +417,25 @@ class LLMService:
                 return LLMResponse(text=text, model=model, latency_ms=latency_ms, provider=provider)
             except Exception as exc:  # noqa: BLE001
                 error_code = _classify_error(exc)
-                _logger.warning(
-                    "LLM attempt %d/%d failed: code=%s exc=%s",
-                    attempt, total_attempts, error_code, type(exc).__name__,
-                )
                 last_exc = exc
                 if error_code == LLMErrorCode.LOGICAL:
-                    break  # logical errors are not retriable
+                    _logger.warning(
+                        "LLM attempt %d/%d failed: code=%s exc=%s — not retriable",
+                        attempt, total_attempts, error_code, type(exc).__name__,
+                    )
+                    break
                 if attempt < total_attempts:
-                    time.sleep(self._retry_delay)
+                    sleep_s = _compute_backoff(attempt, self._backoff_base_s, self._backoff_max_s)
+                    _logger.warning(
+                        "LLM attempt %d/%d failed: code=%s exc=%s — retry in %.2fs",
+                        attempt, total_attempts, error_code, type(exc).__name__, sleep_s,
+                    )
+                    time.sleep(sleep_s)
+                else:
+                    _logger.warning(
+                        "LLM attempt %d/%d failed: code=%s exc=%s — retries exhausted",
+                        attempt, total_attempts, error_code, type(exc).__name__,
+                    )
 
         raise last_exc  # type: ignore[misc]
 
@@ -419,21 +445,25 @@ class LLMService:
     def from_env(cls, profile_data: dict) -> "LLMService":
         """Build LLMService from environment variables.
 
-        LLM_PROVIDER  — api|openai|gemini|ollama
-        LLM_FALLBACK_PROVIDER — openai|gemini|ollama
-        LLM_FALLBACK_ENABLED — 0|1
-        LLM_NOTIFY_FALLBACK — 0|1 (dev/local only)
-        LLM_API_KEY   — OpenAI API key (required for openai provider)
-        GEMINI_API_KEY — Gemini API key (required for gemini provider)
-        OPENAI_MODEL  — openai model name (default: gpt-4o)
-        GEMINI_MODEL  — gemini model name (default: gemini-2.0-flash)
-        OLLAMA_MODEL  — ollama model name (default: qwen2.5:3b)
-        OLLAMA_BASE_URL — ollama base url (default: http://localhost:11434)
-        OLLAMA_TIMEOUT_S — ollama timeout in seconds (default: 30)
-        LLM_RETRIES   — max retries (default: 2)
+        LLM_PROVIDER           — api|openai|gemini|ollama
+        LLM_FALLBACK_PROVIDER  — openai|gemini|ollama
+        LLM_FALLBACK_ENABLED   — 0|1
+        LLM_NOTIFY_FALLBACK    — 0|1 (dev/local only)
+        LLM_API_KEY            — OpenAI API key (required for openai provider)
+        GEMINI_API_KEY         — Gemini API key (required for gemini provider)
+        OPENAI_MODEL           — openai model name (default: gpt-4o)
+        GEMINI_MODEL           — gemini model name (default: gemini-2.0-flash)
+        OLLAMA_MODEL           — ollama model name (default: qwen2.5:3b)
+        OLLAMA_BASE_URL        — ollama base url (default: http://localhost:11434)
+        OLLAMA_TIMEOUT_S       — ollama timeout in seconds (default: 30)
+        LLM_RETRIES            — max retries (default: 2)
+        LLM_RETRY_BACKOFF_BASE_S — backoff base in seconds (default: 1.0)
+        LLM_RETRY_BACKOFF_MAX_S  — backoff cap in seconds (default: 10.0)
         """
         provider = os.getenv("LLM_PROVIDER", "api").strip().lower()
         max_retries = int(os.getenv("LLM_RETRIES", "2"))
+        backoff_base_s = float(os.getenv("LLM_RETRY_BACKOFF_BASE_S", "1.0"))
+        backoff_max_s = float(os.getenv("LLM_RETRY_BACKOFF_MAX_S", "10.0"))
         fallback_enabled = _env_bool("LLM_FALLBACK_ENABLED", default=False)
         fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "").strip().lower()
 
@@ -469,4 +499,6 @@ class LLMService:
             backend=backend,
             profile_data=profile_data,
             max_retries=max_retries,
+            backoff_base_s=backoff_base_s,
+            backoff_max_s=backoff_max_s,
         )
