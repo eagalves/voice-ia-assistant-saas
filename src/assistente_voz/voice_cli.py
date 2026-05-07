@@ -250,6 +250,103 @@ class CompletudeRenderer:
             sys.stdout.flush()
 
 
+# ── LLM worker ───────────────────────────────────────────────────────────────
+
+
+class LLMWorker:
+    """Dedicated thread that calls the LLM for each final utterance.
+
+    Shutdown is two-phase:
+      1. Signal stop — enqueue() becomes a no-op immediately, eliminating the
+         race where an item arrives after the qsize() snapshot.
+      2. Join with a dynamic timeout large enough to finish the in-flight call
+         *and* all items already queued: ``per_call_timeout_s * (queued + 1) + _SHUTDOWN_OVERHEAD_S``.
+
+    This eliminates the spurious warning that fired when a legitimate Ollama call
+    was still running at session end and the old flat 15 s join expired first.
+    """
+
+    _SHUTDOWN_OVERHEAD_S: float = 5.0  # buffer added on top of per-call budget
+
+    def __init__(
+        self,
+        llm: LLMService,
+        state: ConversationState,
+        renderer: "CompletudeRenderer",
+        queue_maxsize: int = 32,
+    ) -> None:
+        self._llm = llm
+        self._state = state
+        self._renderer = renderer
+        self._queue: queue.Queue[str] = queue.Queue(maxsize=queue_maxsize)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    # ── public ───────────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="llm-worker", daemon=True)
+        self._thread.start()
+
+    def enqueue(self, text: str) -> None:
+        """Add an utterance to the queue, dropping the oldest item if full.
+
+        No-op once shutdown() has been called — prevents items enqueued after
+        the qsize() snapshot from shrinking the drain budget.
+        """
+        if self._stop.is_set():
+            return
+        try:
+            self._queue.put_nowait(text)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(text)
+            except queue.Full:
+                pass
+
+    def shutdown(self, per_call_timeout_s: float = 30.0) -> bool:
+        """Signal stop and wait for in-flight + queued calls to finish.
+
+        Returns True when the worker exited cleanly before the timeout.
+        The timeout is ``per_call_timeout_s * (queued + 1) + _SHUTDOWN_OVERHEAD_S``
+        so it always covers the currently running call (already dequeued) plus
+        every item still in the queue.
+
+        To override the overhead in tests, monkeypatch ``LLMWorker._SHUTDOWN_OVERHEAD_S``.
+        """
+        self._stop.set()
+        queued = self._queue.qsize()
+        timeout = per_call_timeout_s * (queued + 1) + self._SHUTDOWN_OVERHEAD_S
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        return self._thread is None or not self._thread.is_alive()
+
+    def pending(self) -> int:
+        """Number of items still waiting in the queue (not counting in-flight)."""
+        return self._queue.qsize()
+
+    # ── internal ─────────────────────────────────────────────────────────────
+
+    def _run(self) -> None:
+        while not self._stop.is_set() or not self._queue.empty():
+            try:
+                user_text = self._queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                reply, model, latency_ms = _query_llm_once(
+                    text=user_text, llm=self._llm, state=self._state
+                )
+                self._renderer.assistant_reply(text=reply, model=model, latency_ms=latency_ms)
+            except Exception as exc:  # noqa: BLE001
+                self._renderer.assistant_error(exc)
+
+
 # ── modes ─────────────────────────────────────────────────────────────────────
 
 
@@ -293,39 +390,12 @@ def run_voice_mode(args: argparse.Namespace) -> int:
     line_width = max(80, int(args.caption_window * 15))
     started_at = time.time()
     renderer = CompletudeRenderer(started_at=started_at, line_width=line_width)
-    llm_queue: queue.Queue[str] = queue.Queue(maxsize=32)
-    llm_stop = threading.Event()
+    llm_worker = LLMWorker(llm=llm, state=state, renderer=renderer)
 
     def _on_caption_event(ev: CaptionEvent) -> None:
         renderer(ev)
-        if not ev.is_final:
-            return
-        text = ev.text.strip()
-        if not text:
-            return
-        try:
-            llm_queue.put_nowait(text)
-        except queue.Full:
-            try:
-                llm_queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                llm_queue.put_nowait(text)
-            except queue.Full:
-                pass
-
-    def _llm_worker() -> None:
-        while not llm_stop.is_set() or not llm_queue.empty():
-            try:
-                user_text = llm_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            try:
-                reply, model, latency_ms = _query_llm_once(text=user_text, llm=llm, state=state)
-                renderer.assistant_reply(text=reply, model=model, latency_ms=latency_ms)
-            except Exception as exc:  # noqa: BLE001
-                renderer.assistant_error(exc)
+        if ev.is_final and ev.text.strip():
+            llm_worker.enqueue(ev.text.strip())
 
     # Pre-load models so the first utterance doesn't include the model-load delay.
     _warmup(final_be, "final", args.debug_audio)
@@ -350,9 +420,7 @@ def run_voice_mode(args: argparse.Namespace) -> int:
           f"preroll={args.preroll_ms}ms", flush=True)
     print(f"[voice] listening… speak now (Ctrl+C to stop)", flush=True)
 
-    llm_thread = threading.Thread(target=_llm_worker, name="llm-worker", daemon=True)
-    llm_thread.start()
-
+    llm_worker.start()
     transcriber.start()
     try:
         if args.duration > 0:
@@ -364,10 +432,15 @@ def run_voice_mode(args: argparse.Namespace) -> int:
         print("\n[voice] stopping…", flush=True)
     finally:
         transcriber.stop()
-        llm_stop.set()
-        llm_thread.join(timeout=15.0)
-        if llm_thread.is_alive():
-            print("[voice-warning] LLM worker did not finish cleanly before timeout.", flush=True)
+        per_call_timeout = float(os.getenv("OLLAMA_TIMEOUT_S", "30.0"))
+        clean = llm_worker.shutdown(per_call_timeout_s=per_call_timeout)
+        if not clean:
+            pending = llm_worker.pending()
+            print(
+                f"[voice-warning] LLM worker timed out — "
+                f"{pending} item(s) may not have been processed.",
+                flush=True,
+            )
         renderer.summary()
     return 0
 

@@ -570,7 +570,7 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 
 **Type:** AFK
 **Blocked by:** Issue 18
-**Status:** Open
+**Status:** Done
 **Prioridade:** Alta
 
 ### Objetivo
@@ -582,9 +582,9 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - Manter encerramento responsivo para Ctrl+C e fim por duracao.
 
 ### Criterio de aceite
-- [ ] Nao exibe warning de worker em fluxo normal com resposta em andamento.
-- [ ] Nao deixa thread pendurada apos encerramento.
-- [ ] Teste automatizado cobrindo encerramento com request LLM em curso.
+- [x] Nao exibe warning de worker em fluxo normal com resposta em andamento.
+- [x] Nao deixa thread pendurada apos encerramento.
+- [x] Teste automatizado cobrindo encerramento com request LLM em curso.
 
 ## Issue 21 - Perfis Operacionais de Latencia (Local vs Qualidade)
 
