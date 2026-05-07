@@ -545,3 +545,66 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - [x] Resposta carrega provider e modelo realmente utilizados.
 - [x] Documentacao de `.env.example` cobre configuracao de Ollama e fallback.
 - [x] Testes automatizados cobrem primario local, fallback tecnico e ausencia de fallback em erro logico.
+
+## Issue 19 - Regressao de Assertividade do Perfil Medical
+
+**Type:** AFK
+**Blocked by:** Issue 18
+**Status:** Done
+**Prioridade:** Alta
+
+### Objetivo
+- Garantir por teste que o perfil medical nao infere contexto clinico ambiguo sem confirmacao explicita.
+
+### O que fazer
+- Adicionar testes cobrindo instrucoes do `profiles/medical.yaml` no prompt de sistema.
+- Criar casos de regressao para termos ambiguos (ex.: "acidente") exigindo pergunta de esclarecimento.
+- Validar que o comportamento permaneceu "uma pergunta por vez" quando aplicavel.
+
+### Criterio de aceite
+- [x] Testes falham sem as instrucoes e passam com as instrucoes atuais.
+- [x] Caso ambiguo nao assume contexto (ex.: nao assumir acidente de transito).
+- [x] Suite de testes permanece verde apos incluir os cenarios.
+
+## Issue 20 - Encerramento Limpo do Worker de LLM no Voice CLI
+
+**Type:** AFK
+**Blocked by:** Issue 18
+**Status:** Open
+**Prioridade:** Alta
+
+### Objetivo
+- Eliminar warning prematuro de encerramento quando o worker de LLM ainda esta concluindo chamada valida no fim da sessao.
+
+### O que fazer
+- Revisar estrategia de shutdown em `voice_cli` para drenar fila com previsibilidade.
+- Ajustar timeout/join para evitar falso negativo em chamadas lentas (Ollama local).
+- Manter encerramento responsivo para Ctrl+C e fim por duracao.
+
+### Criterio de aceite
+- [ ] Nao exibe warning de worker em fluxo normal com resposta em andamento.
+- [ ] Nao deixa thread pendurada apos encerramento.
+- [ ] Teste automatizado cobrindo encerramento com request LLM em curso.
+
+## Issue 21 - Perfis Operacionais de Latencia (Local vs Qualidade)
+
+**Type:** AFK
+**Blocked by:** Issue 18
+**Status:** Open
+**Prioridade:** Media
+
+### Objetivo
+- Fornecer presets claros de configuracao para reduzir latencia em maquina local sem perder previsibilidade de operacao.
+
+### O que fazer
+- Definir presets documentados para:
+	- baixa latencia local,
+	- balanceado,
+	- qualidade.
+- Incluir recomendacoes de `OLLAMA_MODEL`, `LLM_RETRIES`, `OLLAMA_TIMEOUT_S` e modelos Whisper.
+- Atualizar docs de operacao para testes de voz e texto.
+
+### Criterio de aceite
+- [ ] Presets documentados em arquivo de referencia do projeto.
+- [ ] Tempo de resposta medio melhor no preset de baixa latencia em comparacao ao baseline.
+- [ ] Nao regressao funcional dos fluxos de voz/texto.

@@ -240,12 +240,12 @@ Com isso, voce comeca local e simples hoje, mantendo a porta aberta para trocar 
 Este aditivo registra evolucoes feitas apos a rodada base de issues 1-13.
 
 ### LLM providers atualmente suportados
-- `LLM_PROVIDER=api|openai|gemini`.
-- OpenAI e Gemini coexistem no mesmo contrato de `LLMAdapter`/`LLMService`.
-- O boot valida chave por provider (`LLM_API_KEY` ou `GEMINI_API_KEY`).
+- `LLM_PROVIDER=api|openai|gemini|ollama`.
+- OpenAI, Gemini e Ollama coexistem no mesmo contrato de `LLMAdapter`/`LLMService`.
+- O boot valida chave por provider remoto (`LLM_API_KEY` ou `GEMINI_API_KEY`) e regras de fallback.
 
-### LLM local planejado (nao implementado ainda)
-- Provider alvo: `LLM_PROVIDER=ollama`.
+### LLM local implementado
+- Provider local: `LLM_PROVIDER=ollama`.
 - Transporte: HTTP local para `OLLAMA_BASE_URL`.
 - Formato: API de chat com mensagens estruturadas (`system`, `user`, `assistant`).
 - Modelos separados por provider:
@@ -258,7 +258,12 @@ Este aditivo registra evolucoes feitas apos a rodada base de issues 1-13.
 - Regra de fallback: apenas para erros tecnicos de disponibilidade do provider primario.
 - Notificacao em desenvolvimento: exibir aviso de fallback quando `LLM_NOTIFY_FALLBACK=1`.
 - Retries permanecem globais em `LLM_RETRIES`; timeout do Ollama fica especifico em `OLLAMA_TIMEOUT_S`.
-- A resposta do servico deve expor provider e modelo realmente usados.
+- A resposta do servico expoe provider e modelo realmente usados.
+
+### Proximos incrementos planejados
+- Issue 19: testes de regressao para assertividade do perfil medical (anti-inferencia).
+- Issue 20: encerramento limpo do worker de LLM no `voice_cli`.
+- Issue 21: presets operacionais de latencia (local vs qualidade).
 
 ### Captura e transcricao em tempo real
 - `AudioInput` recebeu `MicrophoneSource` com fallback de sample rate para melhorar compatibilidade no Windows.

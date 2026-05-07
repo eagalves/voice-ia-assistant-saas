@@ -136,10 +136,10 @@ Um aplicativo Python local com 8 módulos coesos e de baixo acoplamento: AudioIn
 - STT: pedir repetição ao usuário.
 - LLM: mostrar mensagem útil, manter sessão.
 - Após 2 falhas de STT: fallback para texto manual com confirmação curta obrigatória antes de seguir.
-- Extensao planejada para LLM local: quando `LLM_FALLBACK_ENABLED=1`, permitir fallback por chamada de `ollama` para provider secundario apenas em erros tecnicos de disponibilidade (ex.: conexao recusada, timeout, modelo inexistente, servidor fora do ar).
+- Suporte implementado para LLM local: quando `LLM_FALLBACK_ENABLED=1`, permitir fallback por chamada de `ollama` para provider secundario apenas em erros tecnicos de disponibilidade (ex.: conexao recusada, timeout, modelo inexistente, servidor fora do ar).
 - Em ambiente de desenvolvimento, quando `LLM_NOTIFY_FALLBACK=1`, exibir aviso explicito de fallback; fora disso, manter pelo menos log estruturado.
 
-### Configuracao planejada para LLM local + fallback
+### Configuracao implementada para LLM local + fallback
 - Providers explicitos: `openai`, `gemini`, `ollama`.
 - Modelos por provider: `OPENAI_MODEL`, `GEMINI_MODEL`, `OLLAMA_MODEL`.
 - Variaveis planejadas:
@@ -149,6 +149,11 @@ Um aplicativo Python local com 8 módulos coesos e de baixo acoplamento: AudioIn
 	- `LLM_NOTIFY_FALLBACK`
 	- `OLLAMA_BASE_URL`
 	- `OLLAMA_TIMEOUT_S`
+
+### Proximos incrementos priorizados
+- Regressao de assertividade do perfil medical com testes automatizados para casos ambiguos.
+- Encerramento robusto do worker de LLM no fluxo de voz para evitar warning prematuro.
+- Presets operacionais de latencia para dev local (baixa latencia, balanceado, qualidade).
 
 ---
 

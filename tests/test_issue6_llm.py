@@ -195,6 +195,8 @@ def test_from_env_selects_openai_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "api")
     monkeypatch.setenv("LLM_API_KEY", "openai-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")
+    monkeypatch.setenv("LLM_FALLBACK_ENABLED", "0")
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
     svc = LLMService.from_env(MINIMAL_PROFILE)
     assert isinstance(svc._backend, OpenAIBackend)
 
@@ -203,6 +205,8 @@ def test_from_env_selects_gemini_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+    monkeypatch.setenv("LLM_FALLBACK_ENABLED", "0")
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
     svc = LLMService.from_env(MINIMAL_PROFILE)
     assert isinstance(svc._backend, GeminiBackend)
 
@@ -211,6 +215,8 @@ def test_from_env_selects_ollama_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
     monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("LLM_FALLBACK_ENABLED", "0")
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
     svc = LLMService.from_env(MINIMAL_PROFILE)
     assert isinstance(svc._backend, OllamaBackend)
 
