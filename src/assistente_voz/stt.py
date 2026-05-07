@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import io
+import logging
 import math
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Protocol, Union, runtime_checkable
+
+_logger = logging.getLogger(__name__)
 
 # faster-whisper accepts float32 numpy arrays in [-1, 1] at 16 kHz, mono.
 # We allow callers to pass either raw int16 PCM bytes (legacy path) or a
@@ -88,11 +92,68 @@ def _to_float32(audio: AudioInput, sample_rate: int = 16000):
     return np.ascontiguousarray(arr, dtype=np.float32)
 
 
+# ── Whisper model cache (singleton per process) ───────────────────────────────
+
+# Key: (model_size, device, compute_type) — the three parameters that determine
+# which model file is loaded from disk. beam_size / temperature etc. are
+# inference-time parameters and do not affect the loaded model.
+_model_cache: dict[tuple[str, str, str], object] = {}
+_model_cache_lock = threading.Lock()
+
+
+def _get_cached_model(model_size: str, device: str, compute_type: str) -> object:
+    """Return a WhisperModel for the given config, loading it once per process.
+
+    Thread-safe: concurrent callers with the same key block until the first
+    load completes, then receive the cached instance.
+    """
+    cache_key = (model_size, device, compute_type)
+
+    # Fast path — model already cached (no lock needed for read after first load).
+    if cache_key in _model_cache:
+        return _model_cache[cache_key]
+
+    with _model_cache_lock:
+        # Re-check inside lock: another thread may have loaded while we waited.
+        if cache_key in _model_cache:
+            return _model_cache[cache_key]
+
+        from faster_whisper import WhisperModel  # deferred import
+
+        _logger.info(
+            "WhisperModel: loading '%s' (device=%s compute=%s)",
+            model_size, device, compute_type,
+        )
+        t0 = time.perf_counter()
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        _logger.info(
+            "WhisperModel: '%s' loaded in %.0f ms — cached for this process",
+            model_size, elapsed_ms,
+        )
+        _model_cache[cache_key] = model
+
+    return _model_cache[cache_key]
+
+
+def clear_model_cache() -> None:
+    """Evict all cached WhisperModel instances.
+
+    Intended for tests and tooling only. In production the cache lives for
+    the entire process lifetime; clearing it forces a reload on next use.
+    """
+    with _model_cache_lock:
+        _model_cache.clear()
+
+
 # ── default backend using faster-whisper ──────────────────────────────────────
 
 
 class FasterWhisperBackend:
-    """Production backend.  Model is loaded lazily on first use.
+    """Production backend.  Model is loaded lazily on first use and cached per process.
+
+    Instances with the same (model_size, device, compute_type) share the same
+    WhisperModel object — no reload across sessions within the same process.
 
     ``input_sample_rate`` is the sample rate of *raw bytes* passed to
     ``transcribe``.  Internally everything is coerced to float32 @ 16 kHz —
@@ -127,14 +188,12 @@ class FasterWhisperBackend:
         self._no_speech_threshold = no_speech_threshold
         self._log_prob_threshold = log_prob_threshold
         self._temperature = temperature
-        self._model = None
+        self._model = None  # local reference; populated from process-level cache on first use
 
     def _load(self):
         if self._model is None:
-            from faster_whisper import WhisperModel  # deferred import
-
-            self._model = WhisperModel(
-                self._model_size, device=self._device, compute_type=self._compute_type
+            self._model = _get_cached_model(
+                self._model_size, self._device, self._compute_type
             )
         return self._model
 
