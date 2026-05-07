@@ -601,10 +601,262 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 	- baixa latencia local,
 	- balanceado,
 	- qualidade.
-- Incluir recomendacoes de `OLLAMA_MODEL`, `LLM_RETRIES`, `OLLAMA_TIMEOUT_S` e modelos Whisper.
+- Incluir recomendacoes de `OLLAMA_MODEL`, `LLM_RETRIES`, `OLLAMA_TIMEOUT_S`, `WHISPER_MODEL` e `STT_CONFIDENCE_THRESHOLD` para cada preset.
+- A escolha do tamanho do modelo Whisper (`tiny`, `base`, `small`, `medium`, `large`) e a principal alavanca de latencia STT e deve ser explicitada em cada preset.
 - Atualizar docs de operacao para testes de voz e texto.
 
+### Riscos tecnicos
+- Preset de baixa latencia com modelo Whisper muito pequeno degradar WER abaixo do SLO.
+- Recomendacoes de modelo Ollama e Whisper desalinhadas causarem preset inconsistente.
+
 ### Criterio de aceite
-- [ ] Presets documentados em arquivo de referencia do projeto.
+- [ ] Presets documentados em arquivo de referencia do projeto, incluindo `WHISPER_MODEL` para cada preset.
 - [ ] Tempo de resposta medio melhor no preset de baixa latencia em comparacao ao baseline.
+- [ ] WER do preset de baixa latencia mensurado e registrado (deve permanecer <= 10%).
 - [ ] Nao regressao funcional dos fluxos de voz/texto.
+
+---
+
+## Issue 22 - Fallback Silencioso de Sample Rate no Windows
+
+**Type:** Bug
+**Blocked by:** None
+**Status:** Open
+**Prioridade:** Alta
+
+### Problema
+- `MicrophoneSource` aplica fallback de sample rate automaticamente no Windows quando o dispositivo nao suporta a taxa solicitada.
+- Se o sample rate resultante for diferente de 16 kHz (requerido pelo Whisper), a qualidade de transcricao degrada silenciosamente sem nenhum aviso no log ou na UI.
+- O resampling para 16 kHz e mencionado no adaptador STT, mas nao ha garantia documentada de que ele e sempre aplicado quando o sample rate capturado diverge.
+
+### O que fazer
+- Adicionar log de nivel `WARNING` sempre que o sample rate efetivo for diferente do requerido (16 kHz).
+- Garantir que o pipeline aplica resampling explicito para 16 kHz antes de enviar ao STT, independentemente do sample rate de captura.
+- Registrar no Logger/Metrics o sample rate efetivo por sessao para rastreamento.
+- Adicionar teste que simula captura em sample rate diferente de 16 kHz e valida que o audio entregue ao STT sempre esta em 16 kHz.
+
+### Riscos tecnicos
+- Resampling de baixa qualidade introduzir artefatos de audio que reduzem acuracia do STT.
+- Divergencia silenciosa entre sample rate capturado e processado dificultar debugging de WER ruim em campo.
+
+### Casos de teste minimos
+- Captura simulada em 44100 Hz deve resultar em audio de 16 kHz entregue ao STT.
+- Log de WARNING deve ser emitido quando sample rate de captura diferir de 16 kHz.
+- WER nao deve regredir com resampling ativo em comparacao a captura nativa em 16 kHz.
+
+---
+
+## Issue 23 - Classificacao Robusta de Erros Tecnicos no Fallback de LLM
+
+**Type:** Bug
+**Blocked by:** Issue 18
+**Status:** Open
+**Prioridade:** Alta
+
+### Problema
+- O fallback para provider secundario e acionado apenas para "erros tecnicos de disponibilidade", mas nao ha definicao formal de quais excecoes e codigos HTTP se enquadram nessa categoria.
+- Classificacao incorreta de um erro logico (ex.: prompt invalido, resposta mal formada) como erro tecnico aciona fallback indevidamente e mascara bugs reais.
+- Nao ha teste cobrindo a fronteira entre erro tecnico e erro logico.
+
+### O que fazer
+- Definir lista explicita de excecoes e codigos HTTP que configuram erro tecnico de disponibilidade:
+  - Conexao recusada, timeout de rede, HTTP 502/503/504, modelo inexistente no servidor.
+- Definir lista de erros que **nao** devem acionar fallback:
+  - HTTP 400 (payload invalido), HTTP 401 (autenticacao), HTTP 422 (schema de request errado), erro de parse de resposta.
+- Implementar classificador com codigos estaveis: `LLM_ERR_UNAVAILABLE` vs `LLM_ERR_LOGICAL`.
+- Registrar no Logger qual categoria de erro foi detectada e se o fallback foi ou nao acionado.
+
+### Riscos tecnicos
+- Lista de erros tecnicos muito ampla mascarar bugs de integracao.
+- Lista muito restrita deixar de acionar fallback em cenarios legitimos de indisponibilidade.
+
+### Casos de teste minimos
+- Timeout de rede deve acionar fallback e ser classificado como `LLM_ERR_UNAVAILABLE`.
+- HTTP 400 nao deve acionar fallback e deve ser classificado como `LLM_ERR_LOGICAL`.
+- HTTP 503 deve acionar fallback e registrar log com codigo de erro estavel.
+- Erro de parse da resposta do LLM nao deve acionar fallback.
+
+---
+
+## Issue 24 - Backoff Exponencial nos Retries de LLM
+
+**Type:** Performance / Confiabilidade
+**Blocked by:** Issue 23
+**Status:** Open
+**Prioridade:** Alta
+
+### Problema
+- `LLM_RETRIES` define um numero flat de tentativas sem intervalo entre elas.
+- Retries imediatos em falha de API remota agravam rate limiting e aumentam latencia percebida pelo usuario.
+- Em Ollama local, retries sem espera podem sobrecarregar o processo local antes que ele se recupere.
+
+### O que fazer
+- Implementar backoff exponencial com jitter nos retries de LLM:
+  - Intervalo base configuravel: `LLM_RETRY_BACKOFF_BASE_S` (padrao: 1s).
+  - Fator de multiplicacao: 2x por tentativa.
+  - Jitter aleatorio de +/- 20% para evitar tempestade de requisicoes.
+  - Cap maximo de espera: `LLM_RETRY_BACKOFF_MAX_S` (padrao: 10s).
+- Aplicar backoff apenas para erros tecnicos (categoria `LLM_ERR_UNAVAILABLE` da Issue 23); erros logicos nao devem ter retry.
+- Registrar no Logger cada tentativa com numero, intervalo aguardado e resultado.
+
+### Riscos tecnicos
+- Backoff em Ollama local aumentar latencia total percebida alem do aceitavel para o SLO p95 < 4s.
+- Jitter insuficiente nao resolver colisao de retries em cenario com multiplas sessoes.
+
+### Casos de teste minimos
+- Primeira retry deve aguardar ~1s; segunda retry deve aguardar ~2s (+/- jitter).
+- Erro logico nao deve gerar retry.
+- Cap de espera deve ser respeitado (nenhuma espera maior que `LLM_RETRY_BACKOFF_MAX_S`).
+- Log deve registrar tentativa, intervalo aguardado e codigo de erro por retry.
+
+---
+
+## Issue 25 - Limite de Contexto por Tokens alem do Numero de Mensagens
+
+**Type:** Bug / Performance
+**Blocked by:** Issue 5
+**Status:** Open
+**Prioridade:** Alta
+
+### Problema
+- `ConversationState` controla a janela de contexto apenas por `MAX_CONTEXT_MESSAGES` (numero de mensagens).
+- Uma unica mensagem longa (ex.: prontuario parcial no perfil medical, transcricao de longa fala) pode ultrapassar o limite de tokens do LLM mesmo com poucas mensagens no historico.
+- Overflow de tokens resulta em erro do provider remoto ou truncagem silenciosa da resposta, sem feedback claro para o usuario.
+
+### O que fazer
+- Adicionar estimativa de tokens por mensagem ao `ConversationState` usando contagem aproximada (`len(texto) // 4` como heuristica minima, ou biblioteca `tiktoken` para OpenAI).
+- Introduzir variavel `MAX_CONTEXT_TOKENS` (padrao conservador: 6000 tokens) como limite adicional.
+- Quando o historico ultrapassar `MAX_CONTEXT_TOKENS`, descartar mensagens antigas alem do descarte por `MAX_CONTEXT_MESSAGES`, priorizando manter system prompt e mensagem mais recente do usuario.
+- Registrar no Logger quando truncagem por tokens for acionada.
+
+### Riscos tecnicos
+- Estimativa aproximada de tokens divergir do contador real do provider e gerar cortes prematuros ou insuficientes.
+- Descarte de mensagens antigas em sessao medical eliminar contexto clinico critico.
+
+### Casos de teste minimos
+- Historico com poucas mensagens longas deve acionar descarte por tokens antes de atingir `MAX_CONTEXT_MESSAGES`.
+- Descarte por tokens deve preservar a mensagem mais recente do usuario.
+- Logger deve emitir evento quando truncagem por tokens ocorrer.
+- Historico dentro de ambos os limites nao deve sofrer descarte.
+
+---
+
+## Issue 26 - Cache do Modelo Whisper em Memoria entre Sessoes
+
+**Type:** Performance
+**Blocked by:** None
+**Status:** Open
+**Prioridade:** Media
+
+### Problema
+- O modelo Whisper e carregado do disco a cada nova sessao de voz.
+- Modelos `medium` e `large` levam varios segundos para carregar, adicionando latencia de boot percebida pelo usuario antes da primeira transcricao.
+- Em fluxo de uso frequente (multiplas sessoes curtas), o custo de carregamento se repete desnecessariamente.
+
+### O que fazer
+- Implementar singleton de carregamento do modelo Whisper no `STTAdapter`:
+  - Carregar o modelo uma unica vez na primeira instanciacao.
+  - Reutilizar a instancia em memoria para todas as sessoes subsequentes no mesmo processo.
+- Registrar no Logger tempo de carregamento do modelo na primeira carga.
+- Garantir que a troca de `WHISPER_MODEL` por reinicio do processo carregue o novo modelo corretamente (sem estado residual).
+
+### Riscos tecnicos
+- Modelo em memoria aumentar uso de RAM de forma inesperada em maquinas com pouca memoria.
+- Singleton nao thread-safe causar condicao de corrida se multiplas sessoes iniciarem simultaneamente.
+
+### Casos de teste minimos
+- Segunda instanciacao do `STTAdapter` no mesmo processo nao deve recarregar o modelo do disco.
+- Log de tempo de carregamento deve aparecer apenas na primeira carga.
+- Reinicio do processo deve carregar modelo corretamente sem estado residual.
+
+---
+
+## Issue 27 - Streaming de Resposta do LLM na UI
+
+**Type:** Performance / UX
+**Blocked by:** Issue 7, Issue 12
+**Status:** Open
+**Prioridade:** Media
+
+### Problema
+- O fluxo atual aguarda a resposta textual **completa** do LLM antes de exibi-la na UI.
+- Para respostas longas (prontuario medical, avaliacao de entrevista), o usuario fica sem feedback visual por varios segundos, aumentando latencia percebida mesmo dentro do SLO tecnico.
+
+### O que fazer
+- Implementar streaming de tokens no `LLMAdapter` para os providers que suportam (OpenAI, Gemini e Ollama suportam nativamente).
+- O `Orchestrator` deve repassar tokens parciais ao `TextUI` conforme chegam.
+- A `TextUI` deve exibir tokens em tempo real no campo de resposta, com indicador visual de que a resposta ainda esta sendo gerada.
+- Manter comportamento atual (resposta completa) como fallback quando o provider nao suportar streaming.
+- Adicionar metrica de `time_to_first_token` ao Logger/Metrics alem da latencia total.
+
+### Riscos tecnicos
+- Tokens parciais exibir conteudo inconsistente se o LLM gerar tokens antes de completar raciocinio (relevante para perfil medical).
+- Implementacao de streaming diferente por provider aumentar complexidade do `LLMAdapter`.
+
+### Casos de teste minimos
+- Primeiro token deve aparecer na UI antes da resposta completa ser recebida.
+- Metrica `time_to_first_token` deve ser registrada por interacao.
+- Fallback para resposta completa deve funcionar quando streaming nao estiver disponivel.
+- Conteudo exibido em streaming deve ser identico ao conteudo da resposta completa ao final.
+
+---
+
+## Issue 28 - Politica de Confianca STT Adaptativa em Ambientes Ruidosos
+
+**Type:** Performance / UX
+**Blocked by:** Issue 4
+**Status:** Open
+**Prioridade:** Media
+
+### Problema
+- O limiar de confianca STT e fixo em 0,80.
+- Em ambientes com ruido constante (consultorio, escritorio), scores sistematicamente abaixo de 0,80 causam loop de retentativas em todas as interacoes, e apos 2 falhas forcam fallback manual permanente — quebrando o fluxo de voz.
+- O limiar fixo nao distingue entre baixa confianca por ruido de fundo (aceitavel com aviso) e fala genuinamente ininteligivel (deve bloquear).
+
+### O que fazer
+- Introduzir dois limiares configuraveis por variavel de ambiente:
+  - `STT_CONFIDENCE_BLOCK=0.60`: abaixo desse valor, sempre bloquear e pedir repeticao.
+  - `STT_CONFIDENCE_WARN=0.80`: entre block e warn, aceitar o trecho com aviso visual na UI de baixa confianca.
+- Para perfil `medical` (critico): `STT_CONFIDENCE_BLOCK` nao pode ser configurado abaixo de 0,70.
+- Registrar distribuicao de scores de confianca no Logger para permitir ajuste de limiares por ambiente.
+
+### Riscos tecnicos
+- Limiar de aviso muito permissivo propagar transcricoes erradas ao LLM sem o usuario perceber.
+- Perfil medical com limiares relaxados comprometer seguranca clinica.
+
+### Casos de teste minimos
+- Score >= 0,80 deve seguir fluxo normal sem aviso.
+- Score entre 0,60 e 0,79 deve seguir com aviso visual de baixa confianca.
+- Score < 0,60 deve bloquear e solicitar repeticao.
+- Perfil medical nao deve aceitar `STT_CONFIDENCE_BLOCK` abaixo de 0,70.
+
+---
+
+## Issue 29 - Agrupamento de Trechos Incertos na Revisao Final do Perfil Medical
+
+**Type:** UX / Confiabilidade
+**Blocked by:** Issue 9, Issue 10
+**Status:** Open
+**Prioridade:** Media
+
+### Problema
+- Em sessao medical com ruido de ambiente, muitos trechos podem ser marcados como `role incerto`.
+- A revisao final e obrigatoria para perfil `medical` (critico) antes de emitir o prontuario.
+- Sem limite ou agrupamento, o usuario pode enfrentar dezenas de confirmacoes individuais, comprometendo a UX em cenario real de consultorio.
+
+### O que fazer
+- Agrupar trechos incertos consecutivos do mesmo contexto temporal para revisao em bloco.
+- Definir limite maximo de itens de revisao por sessao: `MAX_REVIEW_ITEMS` (padrao: 10).
+- Quando o numero de trechos incertos ultrapassar `MAX_REVIEW_ITEMS`, agrupar os excedentes por proximidade temporal em um unico item de revisao.
+- Para trechos com score de atribuicao acima de limiar secundario configuravel, permitir auto-atribuicao com registro em log de auditoria.
+- Exibir na UI o numero total de trechos incertos e progresso da revisao antes de iniciar.
+
+### Riscos tecnicos
+- Agrupamento mascarar erros de atribuicao de role em trechos criticos do prontuario.
+- Auto-atribuicao com limiar muito permissivo comprometer integridade clinica do artefato.
+
+### Casos de teste minimos
+- Sessao com 20 trechos incertos deve apresentar no maximo `MAX_REVIEW_ITEMS` itens de revisao.
+- Trechos agrupados devem registrar auditoria indicando que foram consolidados.
+- Revisao concluida com agrupamento deve gerar prontuario final valido.
+- Auto-atribuicao deve registrar log de auditoria com score e decisao tomada.

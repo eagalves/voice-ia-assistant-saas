@@ -58,22 +58,28 @@ Fora do escopo inicial:
 - Expor resultado padronizado para o orquestrador.
 
 **Contrato (conceitual)**
-- Entrada: trecho de audio.
-- Saida: texto transcrito, idioma (opcional), confianca (opcional).
+- Entrada: trecho de audio (bytes PCM ou ndarray float32, resamplado para 16 kHz antes do envio).
+- Saida: texto transcrito, idioma (opcional), confianca (float 0-1).
 
 **Implementacoes previstas**
-- `LocalSTT` (agora): modelo local.
+- `LocalSTT` (agora): modelo Whisper via `faster-whisper`, carregado como singleton por processo.
 - `ApiSTT` (futuro): STT por key.
 
-**Regra**
+**Politica de confianca**
+- `STT_CONFIDENCE_WARN` (padrao 0,80): aceitar trecho com aviso visual na UI.
+- `STT_CONFIDENCE_BLOCK` (padrao 0,60): bloquear e solicitar repeticao.
+- Para perfil `medical`: `STT_CONFIDENCE_BLOCK` nao pode ser configurado abaixo de 0,70.
+
+**Regras**
 - O orquestrador conhece apenas o contrato STT, nunca a implementacao concreta.
+- Log de WARNING obrigatorio quando sample rate de captura diferir de 16 kHz.
 
 ---
 
 ### 3) ConversationState
 **Responsabilidade**
 - Manter contexto curto da sessao (ultimas mensagens).
-- Controlar janela de contexto para limitar custo/token.
+- Controlar janela de contexto por numero de mensagens (`MAX_CONTEXT_MESSAGES`) **e** por estimativa de tokens (`MAX_CONTEXT_TOKENS`).
 
 **Entradas**
 - Mensagem do usuario (vinda do STT).
@@ -81,6 +87,11 @@ Fora do escopo inicial:
 
 **Saidas**
 - Historico resumido para o LLM.
+
+**Regra de truncagem**
+- Descarte prioriza mensagens mais antigas.
+- System prompt e mensagem mais recente do usuario sao sempre preservados.
+- Logger emite evento quando truncagem por tokens for acionada.
 
 **Dependencias**
 - Sem dependencia direta de AudioInput, STT ou LLM.
@@ -93,14 +104,20 @@ Fora do escopo inicial:
 
 **Contrato (conceitual)**
 - Entrada: prompt atual + historico de conversa.
-- Saida: resposta em texto + metadados simples (tempo/tokens opcional).
+- Saida: resposta em texto (streaming ou completa) + metadados (latencia total, `time_to_first_token`, tokens, provider e modelo usados).
 
 **Implementacoes previstas**
-- `ApiLLM` (agora): provider remoto via key.
-- `LocalLLM` (futuro): modelo local.
+- `ApiLLM` (agora): provider remoto via key (OpenAI, Gemini).
+- `OllamaLLM` (implementado): modelo local via HTTP.
+
+**Politica de retries**
+- Apenas erros tecnicos (`LLM_ERR_UNAVAILABLE`) disparam retry.
+- Backoff exponencial com jitter: base `LLM_RETRY_BACKOFF_BASE_S`, cap `LLM_RETRY_BACKOFF_MAX_S`.
+- Erros logicos (`LLM_ERR_LOGICAL`) nao tem retry e nao acionam fallback.
 
 **Regra**
 - O orquestrador usa apenas o contrato LLM.
+- Streaming de tokens deve ser suportado quando o provider permitir.
 
 ---
 
@@ -261,9 +278,17 @@ Este aditivo registra evolucoes feitas apos a rodada base de issues 1-13.
 - A resposta do servico expoe provider e modelo realmente usados.
 
 ### Proximos incrementos planejados
-- Issue 19: testes de regressao para assertividade do perfil medical (anti-inferencia).
+- Issue 19: testes de regressao para assertividade do perfil medical (anti-inferencia). **[Done]**
 - Issue 20: encerramento limpo do worker de LLM no `voice_cli`.
-- Issue 21: presets operacionais de latencia (local vs qualidade).
+- Issue 21: presets operacionais de latencia (local vs qualidade) — incluindo `WHISPER_MODEL` como principal alavanca de latencia STT.
+- Issue 22: log e garantia de resampling quando sample rate de captura divergir de 16 kHz no Windows.
+- Issue 23: classificador formal de erros tecnicos vs logicos no fallback de LLM (`LLM_ERR_UNAVAILABLE` / `LLM_ERR_LOGICAL`).
+- Issue 24: backoff exponencial com jitter nos retries de LLM (`LLM_RETRY_BACKOFF_BASE_S`, `LLM_RETRY_BACKOFF_MAX_S`).
+- Issue 25: limite de contexto por tokens alem de numero de mensagens (`MAX_CONTEXT_TOKENS`).
+- Issue 26: singleton de carregamento do modelo Whisper para evitar reload por sessao.
+- Issue 27: streaming de tokens do LLM para a UI com metrica de `time_to_first_token`.
+- Issue 28: dois limiares de confianca STT (`STT_CONFIDENCE_BLOCK`, `STT_CONFIDENCE_WARN`) para ambientes ruidosos.
+- Issue 29: agrupamento de trechos incertos na revisao final do perfil medical (`MAX_REVIEW_ITEMS`).
 
 ### Captura e transcricao em tempo real
 - `AudioInput` recebeu `MicrophoneSource` com fallback de sample rate para melhorar compatibilidade no Windows.
