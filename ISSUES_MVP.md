@@ -883,7 +883,7 @@ resultando em transcricao de voz em velocidade 3x incorreta. Esse cenario esta c
 
 **Type:** Bug
 **Blocked by:** None
-**Status:** Open
+**Status:** Done
 **Prioridade:** Alta
 
 ### Problema

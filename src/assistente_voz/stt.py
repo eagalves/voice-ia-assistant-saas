@@ -48,9 +48,17 @@ class WhisperBackend(Protocol):
     """Minimal interface consumed by STTService — allows test doubles."""
 
     def transcribe(
-        self, audio: AudioInput, language: str = "pt"
+        self,
+        audio: AudioInput,
+        language: str = "pt",
+        sample_rate: int | None = None,
     ) -> tuple[str, float]:
-        """Return (text, avg_confidence).  confidence is 0.0–1.0."""
+        """Return (text, avg_confidence).  confidence is 0.0–1.0.
+
+        ``sample_rate`` is the capture rate of *audio* when passed as raw bytes.
+        Implementations should resample to 16 kHz when it differs from their
+        expected input rate.  Pass ``None`` when audio is already float32 @ 16 kHz.
+        """
         ...
 
 
@@ -197,9 +205,15 @@ class FasterWhisperBackend:
             )
         return self._model
 
-    def transcribe(self, audio: AudioInput, language: str = "pt") -> tuple[str, float]:
+    def transcribe(
+        self,
+        audio: AudioInput,
+        language: str = "pt",
+        sample_rate: int | None = None,
+    ) -> tuple[str, float]:
         model = self._load()
-        samples = _to_float32(audio, sample_rate=self._input_sample_rate)
+        effective_rate = sample_rate if sample_rate is not None else self._input_sample_rate
+        samples = _to_float32(audio, sample_rate=effective_rate)
         if samples.size == 0:
             return "", 0.0
 
@@ -266,14 +280,31 @@ class STTService:
         self._threshold = confidence_threshold
         self._max_retries = max_retries
 
-    def transcribe(self, audio: AudioInput) -> STTOutcome:
+    def transcribe(
+        self,
+        audio: AudioInput,
+        sample_rate: int | None = None,
+    ) -> STTOutcome:
         """Attempt transcription applying confidence policy.
 
-        ``audio`` may be raw 16-bit PCM bytes (legacy callers) or a numpy
-        float32 array @ 16 kHz (streaming path).  Retries by calling the
-        backend again — Whisper sampling is non-deterministic so a 2nd pass
-        sometimes lifts a borderline buffer above the threshold.
+        ``audio`` may be raw 16-bit PCM bytes or a numpy float32 array @ 16 kHz.
+        ``sample_rate`` must be provided when ``audio`` is raw bytes captured at
+        a rate other than 16 kHz (e.g. after Windows fallback to 48 kHz).
+        STTService resamples to float32 @ 16 kHz before calling the backend so
+        every attempt in the retry loop receives audio in the correct format.
         """
+        # Normalise to float32 @ 16 kHz once, before the retry loop, so every
+        # attempt operates on the same resampled buffer.
+        if sample_rate is not None and sample_rate != 16000:
+            audio = _to_float32(audio, sample_rate=sample_rate)
+        elif sample_rate is None and isinstance(audio, (bytes, bytearray, memoryview)):
+            _logger.warning(
+                "STTService.transcribe: raw bytes received without sample_rate — "
+                "assuming 16 kHz. If audio was captured at a different rate "
+                "(e.g. after Windows fallback), pass sample_rate=segment.sample_rate "
+                "to avoid silent transcription quality loss."
+            )
+
         attempts = 0
         last_result: TranscriptionResult | None = None
 
