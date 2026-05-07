@@ -505,7 +505,7 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 
 **Type:** AFK
 **Blocked by:** Issue 15
-**Status:** Planned
+**Status:** Done
 **Prioridade:** Alta
 
 ### Objetivo
@@ -539,9 +539,9 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - Contrato de mensagens do Ollama divergir dos providers remotos.
 
 ### Criterio de aceite
-- [ ] `LLM_PROVIDER=ollama` funciona no mesmo `LLMService.from_env`.
-- [ ] Fallback para `gemini` ocorre apenas em erro tecnico de disponibilidade.
-- [ ] Aviso explicito de fallback aparece em ambiente de desenvolvimento.
-- [ ] Resposta carrega provider e modelo realmente utilizados.
-- [ ] Documentacao de `.env.example` cobre configuracao de Ollama e fallback.
-- [ ] Testes automatizados cobrem primario local, fallback tecnico e ausencia de fallback em erro logico.
+- [x] `LLM_PROVIDER=ollama` funciona no mesmo `LLMService.from_env`.
+- [x] Fallback para `gemini` ocorre apenas em erro tecnico de disponibilidade.
+- [x] Aviso explicito de fallback aparece em ambiente de desenvolvimento.
+- [x] Resposta carrega provider e modelo realmente utilizados.
+- [x] Documentacao de `.env.example` cobre configuracao de Ollama e fallback.
+- [x] Testes automatizados cobrem primario local, fallback tecnico e ausencia de fallback em erro logico.

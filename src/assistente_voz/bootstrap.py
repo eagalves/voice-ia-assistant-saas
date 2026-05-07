@@ -26,6 +26,13 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_profile_entry(profile_id: str, profiles_dir: Path) -> ProfileEntry:
     catalog = load_catalog(profiles_dir)
     if profile_id not in catalog:
@@ -63,15 +70,35 @@ def bootstrap_app(base_dir: Path | None = None) -> BootstrapResult:
     profile_id = _required_env("ASSISTANT_PROFILE")
     llm_provider = _required_env("LLM_PROVIDER").strip().lower()
 
+    allowed = {"api", "openai", "gemini", "ollama", "local"}
+    if llm_provider not in allowed:
+        raise ConfigError(
+            "CONFIG_ENV_INVALID",
+            "LLM_PROVIDER must be one of: api, openai, gemini, ollama, local",
+        )
+
     if llm_provider in {"api", "openai"}:
         _required_env("LLM_API_KEY")
     elif llm_provider == "gemini":
         _required_env("GEMINI_API_KEY")
-    elif llm_provider != "local":
-        raise ConfigError(
-            "CONFIG_ENV_INVALID",
-            "LLM_PROVIDER must be one of: api, openai, gemini, local",
-        )
+
+    fallback_enabled = _env_bool("LLM_FALLBACK_ENABLED", default=False)
+    if fallback_enabled:
+        fallback_provider = _required_env("LLM_FALLBACK_PROVIDER").strip().lower()
+        if fallback_provider not in allowed:
+            raise ConfigError(
+                "CONFIG_ENV_INVALID",
+                "LLM_FALLBACK_PROVIDER must be one of: api, openai, gemini, ollama, local",
+            )
+        if fallback_provider == llm_provider:
+            raise ConfigError(
+                "CONFIG_ENV_INVALID",
+                "LLM_FALLBACK_PROVIDER must be different from LLM_PROVIDER",
+            )
+        if fallback_provider in {"api", "openai"}:
+            _required_env("LLM_API_KEY")
+        elif fallback_provider == "gemini":
+            _required_env("GEMINI_API_KEY")
 
     root = base_dir or Path.cwd()
     profile_entry = _resolve_profile_entry(profile_id=profile_id, profiles_dir=root / "profiles")

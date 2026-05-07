@@ -2,12 +2,14 @@
 import pytest
 
 from assistente_voz.conversation_state import ConversationState
-import assistente_voz.llm as llm_module
 from assistente_voz.llm import (
+    FallbackBackend,
     GeminiBackend,
     LLMBackend,
+    LLMTechnicalError,
     LLMResponse,
     LLMService,
+    OllamaBackend,
     OpenAIBackend,
     build_system_prompt,
 )
@@ -18,24 +20,28 @@ from assistente_voz.llm import (
 class StubBackend:
     """Returns a fixed response; records calls."""
 
+    provider_name = "stub"
+
     def __init__(self, response: str = "resposta do LLM", model: str = "stub-model") -> None:
         self._response = response
         self._model = model
         self.calls: list[list[dict]] = []
 
-    def complete(self, messages: list[dict]) -> tuple[str, str]:
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
         self.calls.append(messages)
-        return self._response, self._model
+        return self._response, self._model, self.provider_name
 
 
 class FailingBackend:
     """Raises on every call — for retry tests."""
 
+    provider_name = "stub"
+
     def __init__(self, error: Exception) -> None:
         self._error = error
         self.calls = 0
 
-    def complete(self, messages: list[dict]) -> tuple[str, str]:
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
         self.calls += 1
         raise self._error
 
@@ -43,15 +49,17 @@ class FailingBackend:
 class FailThenSucceedBackend:
     """Fails the first N calls, then succeeds."""
 
+    provider_name = "stub"
+
     def __init__(self, fail_times: int) -> None:
         self._fail_times = fail_times
         self.calls = 0
 
-    def complete(self, messages: list[dict]) -> tuple[str, str]:
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
         self.calls += 1
         if self.calls <= self._fail_times:
             raise ConnectionError("simulated timeout")
-        return "recuperado com sucesso", "stub"
+        return "recuperado com sucesso", "stub", self.provider_name
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -134,6 +142,7 @@ def test_complete_returns_response_with_history():
 
     assert response.text == "500mg a cada 8 horas."
     assert response.model == "stub-model"
+    assert response.provider == "stub"
     assert response.latency_ms >= 0
     assert len(backend.calls) == 1
 
@@ -185,7 +194,7 @@ def test_stub_backend_satisfies_protocol():
 def test_from_env_selects_openai_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "api")
     monkeypatch.setenv("LLM_API_KEY", "openai-key")
-    monkeypatch.setenv("LLM_MODEL", "gpt-4o")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")
     svc = LLMService.from_env(MINIMAL_PROFILE)
     assert isinstance(svc._backend, OpenAIBackend)
 
@@ -193,9 +202,38 @@ def test_from_env_selects_openai_provider(monkeypatch):
 def test_from_env_selects_gemini_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
-    monkeypatch.setenv("LLM_MODEL", "gemini-2.0-flash")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
     svc = LLMService.from_env(MINIMAL_PROFILE)
     assert isinstance(svc._backend, GeminiBackend)
+
+
+def test_from_env_selects_ollama_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5:3b")
+    svc = LLMService.from_env(MINIMAL_PROFILE)
+    assert isinstance(svc._backend, OllamaBackend)
+
+
+def test_fallback_backend_uses_secondary_for_technical_error():
+    primary = FailingBackend(LLMTechnicalError("offline"))
+    fallback = StubBackend(response="fallback ok", model="gemini-x")
+    backend = FallbackBackend(primary=primary, fallback=fallback, enabled=True, notify_fallback=False)
+
+    text, model, provider = backend.complete([{"role": "user", "content": "oi"}])
+
+    assert text == "fallback ok"
+    assert model == "gemini-x"
+    assert provider == "stub"
+
+
+def test_fallback_backend_does_not_fallback_for_non_technical_error():
+    primary = FailingBackend(ValueError("bad payload"))
+    fallback = StubBackend(response="fallback ok")
+    backend = FallbackBackend(primary=primary, fallback=fallback, enabled=True, notify_fallback=False)
+
+    with pytest.raises(ValueError):
+        backend.complete([{"role": "user", "content": "oi"}])
 
 
 def test_from_env_raises_for_unsupported_provider(monkeypatch):

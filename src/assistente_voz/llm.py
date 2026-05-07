@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import time
-from dataclasses import dataclass, field
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from assistente_voz.conversation_state import ConversationState
@@ -15,6 +18,7 @@ class LLMResponse:
     text: str
     model: str
     latency_ms: float
+    provider: str = ""
 
 
 # ── LLM backend interface (injectable) ────────────────────────────────────────
@@ -22,9 +26,15 @@ class LLMResponse:
 
 @runtime_checkable
 class LLMBackend(Protocol):
-    def complete(self, messages: list[dict]) -> tuple[str, str]:
-        """Return (response_text, model_name)."""
+    provider_name: str
+
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
+        """Return (response_text, model_name, provider_name)."""
         ...
+
+
+class LLMTechnicalError(Exception):
+    """Technical availability error that can trigger configured fallback."""
 
 
 # ── OpenAI production backend ─────────────────────────────────────────────────
@@ -32,6 +42,8 @@ class LLMBackend(Protocol):
 
 class OpenAIBackend:
     """Production backend using openai SDK."""
+
+    provider_name = "openai"
 
     def __init__(self, api_key: str, model: str = "gpt-4o") -> None:
         self._model = model
@@ -45,18 +57,20 @@ class OpenAIBackend:
             self._client = OpenAI(api_key=self._api_key)
         return self._client
 
-    def complete(self, messages: list[dict]) -> tuple[str, str]:
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
         client = self._get_client()
         response = client.chat.completions.create(
             model=self._model,
             messages=messages,
         )
         text = response.choices[0].message.content or ""
-        return text, response.model
+        return text, response.model, self.provider_name
 
 
 class GeminiBackend:
     """Production backend using Google Gemini SDK."""
+
+    provider_name = "gemini"
 
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
         self._api_key = api_key
@@ -78,7 +92,7 @@ class GeminiBackend:
             lines.append(f"[{role}] {content}")
         return "\n\n".join(lines)
 
-    def complete(self, messages: list[dict]) -> tuple[str, str]:
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
         client = self._get_client()
         prompt = self._messages_to_prompt(messages)
         response = client.models.generate_content(
@@ -87,7 +101,109 @@ class GeminiBackend:
         )
         text = getattr(response, "text", "") or ""
         model_name = getattr(response, "model", None) or self._model
-        return text, model_name
+        return text, model_name, self.provider_name
+
+
+class OllamaBackend:
+    """Production backend using local Ollama HTTP API."""
+
+    provider_name = "ollama"
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "qwen2.5:3b",
+        timeout_s: float = 30.0,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._timeout_s = timeout_s
+
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
+        url = f"{self._base_url}/api/chat"
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "stream": False,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout_s) as response:  # noqa: S310
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # Availability-related HTTP failures should be eligible for fallback.
+            if exc.code in {404, 408, 429, 500, 502, 503, 504}:
+                raise LLMTechnicalError(f"Ollama HTTP {exc.code}") from exc
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise LLMTechnicalError("Ollama unavailable") from exc
+
+        data = json.loads(raw or "{}")
+        message = data.get("message") or {}
+        text = str(message.get("content") or "")
+        model_name = str(data.get("model") or self._model)
+        return text, model_name, self.provider_name
+
+
+class FallbackBackend:
+    """Try primary backend first; use fallback only for technical errors."""
+
+    provider_name = "fallback"
+
+    def __init__(
+        self,
+        primary: LLMBackend,
+        fallback: LLMBackend,
+        enabled: bool,
+        notify_fallback: bool,
+    ) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._enabled = enabled
+        self._notify_fallback = notify_fallback
+
+    def complete(self, messages: list[dict]) -> tuple[str, str, str]:
+        try:
+            return self._primary.complete(messages)
+        except Exception as exc:  # noqa: BLE001
+            if not self._enabled or not _is_technical_error(self._primary.provider_name, exc):
+                raise
+            if self._notify_fallback:
+                print(
+                    f"[llm-fallback] {self._primary.provider_name} -> {self._fallback.provider_name}: "
+                    f"{type(exc).__name__}",
+                    flush=True,
+                )
+            return self._fallback.complete(messages)
+
+
+def _is_technical_error(provider: str, exc: Exception) -> bool:
+    if isinstance(exc, LLMTechnicalError):
+        return True
+    if provider == "ollama":
+        return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError, OSError))
+    return False
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _should_notify_fallback() -> bool:
+    env = os.getenv("APP_ENV", "dev").strip().lower()
+    if env not in {"dev", "development", "local"}:
+        return False
+    return _env_bool("LLM_NOTIFY_FALLBACK", default=False)
 
 
 # ── system prompt builder ─────────────────────────────────────────────────────
@@ -192,9 +308,9 @@ class LLMService:
         for attempt in range(1, self._max_retries + 2):
             t0 = time.perf_counter()
             try:
-                text, model = self._backend.complete(messages)
+                text, model, provider = self._backend.complete(messages)
                 latency_ms = (time.perf_counter() - t0) * 1000
-                return LLMResponse(text=text, model=model, latency_ms=latency_ms)
+                return LLMResponse(text=text, model=model, latency_ms=latency_ms, provider=provider)
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt <= self._max_retries:
@@ -208,25 +324,51 @@ class LLMService:
     def from_env(cls, profile_data: dict) -> "LLMService":
         """Build LLMService from environment variables.
 
-        LLM_PROVIDER  — api|openai|gemini
+        LLM_PROVIDER  — api|openai|gemini|ollama
+        LLM_FALLBACK_PROVIDER — openai|gemini|ollama
+        LLM_FALLBACK_ENABLED — 0|1
+        LLM_NOTIFY_FALLBACK — 0|1 (dev/local only)
         LLM_API_KEY   — OpenAI API key (required for openai provider)
         GEMINI_API_KEY — Gemini API key (required for gemini provider)
-        LLM_MODEL     — model name (gpt-4o or gemini-2.0-flash by default)
+        OPENAI_MODEL  — openai model name (default: gpt-4o)
+        GEMINI_MODEL  — gemini model name (default: gemini-2.0-flash)
+        OLLAMA_MODEL  — ollama model name (default: qwen2.5:3b)
+        OLLAMA_BASE_URL — ollama base url (default: http://localhost:11434)
+        OLLAMA_TIMEOUT_S — ollama timeout in seconds (default: 30)
         LLM_RETRIES   — max retries (default: 2)
         """
         provider = os.getenv("LLM_PROVIDER", "api").strip().lower()
         max_retries = int(os.getenv("LLM_RETRIES", "2"))
+        fallback_enabled = _env_bool("LLM_FALLBACK_ENABLED", default=False)
+        fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "").strip().lower()
 
-        if provider in {"api", "openai"}:
-            api_key = os.environ["LLM_API_KEY"]
-            model = os.getenv("LLM_MODEL", "gpt-4o")
-            backend: LLMBackend = OpenAIBackend(api_key=api_key, model=model)
-        elif provider == "gemini":
-            api_key = os.environ["GEMINI_API_KEY"]
-            model = os.getenv("LLM_MODEL", "gemini-2.0-flash")
-            backend = GeminiBackend(api_key=api_key, model=model)
-        else:
-            raise ValueError("Unsupported LLM_PROVIDER. Use: api, openai or gemini")
+        def _build_backend(selected_provider: str) -> LLMBackend:
+            if selected_provider in {"api", "openai"}:
+                api_key = os.environ["LLM_API_KEY"]
+                model = os.getenv("OPENAI_MODEL", os.getenv("LLM_MODEL", "gpt-4o"))
+                return OpenAIBackend(api_key=api_key, model=model)
+            if selected_provider == "gemini":
+                api_key = os.environ["GEMINI_API_KEY"]
+                model = os.getenv("GEMINI_MODEL", os.getenv("LLM_MODEL", "gemini-2.0-flash"))
+                return GeminiBackend(api_key=api_key, model=model)
+            if selected_provider in {"ollama", "local"}:
+                base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+                model = os.getenv("OLLAMA_MODEL", os.getenv("LLM_MODEL", "qwen2.5:3b"))
+                timeout_s = float(os.getenv("OLLAMA_TIMEOUT_S", "30"))
+                return OllamaBackend(base_url=base_url, model=model, timeout_s=timeout_s)
+            raise ValueError("Unsupported LLM provider. Use: api, openai, gemini, ollama")
+
+        backend: LLMBackend = _build_backend(provider)
+        if fallback_enabled and fallback_provider:
+            fallback_backend = _build_backend(fallback_provider)
+            if fallback_backend.provider_name != backend.provider_name:
+                backend = FallbackBackend(
+                    primary=backend,
+                    fallback=fallback_backend,
+                    enabled=True,
+                    notify_fallback=_should_notify_fallback(),
+                )
+
 
         return cls(
             backend=backend,

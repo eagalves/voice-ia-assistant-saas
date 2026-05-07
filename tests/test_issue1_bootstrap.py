@@ -11,6 +11,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.delenv("ASSISTANT_PROFILE", raising=False)
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_FALLBACK_ENABLED", raising=False)
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("SENIORITY_LEVEL", raising=False)
@@ -75,6 +77,42 @@ def test_bootstrap_loads_with_gemini_provider(monkeypatch: pytest.MonkeyPatch) -
 
     assert result.profile_id == "medical"
     assert result.llm_provider == "gemini"
+
+
+def test_bootstrap_loads_with_ollama_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSISTANT_PROFILE", "medical")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+
+    result = bootstrap_app(base_dir=Path.cwd())
+
+    assert result.profile_id == "medical"
+    assert result.llm_provider == "ollama"
+
+
+def test_bootstrap_fails_when_fallback_provider_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSISTANT_PROFILE", "medical")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_FALLBACK_ENABLED", "1")
+
+    with pytest.raises(ConfigError) as exc:
+        bootstrap_app(base_dir=Path.cwd())
+
+    assert exc.value.code == "CONFIG_ENV_MISSING"
+    assert "LLM_FALLBACK_PROVIDER" in exc.value.message
+
+
+def test_bootstrap_fails_when_fallback_provider_equals_primary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSISTANT_PROFILE", "medical")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_FALLBACK_ENABLED", "1")
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "gemini")
+
+    with pytest.raises(ConfigError) as exc:
+        bootstrap_app(base_dir=Path.cwd())
+
+    assert exc.value.code == "CONFIG_ENV_INVALID"
+    assert "different from LLM_PROVIDER" in exc.value.message
 
 
 def test_bootstrap_fails_with_invalid_seniority_level_for_interviewer(
