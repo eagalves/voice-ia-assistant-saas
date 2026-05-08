@@ -52,6 +52,9 @@ class StubLLM:
         assert self._response is not None
         return self._response
 
+    def stream(self, state: ConversationState, on_token) -> LLMResponse:
+        return self.complete(state)
+
 
 def _segment() -> AudioSegment:
     return AudioSegment(audio_bytes=b"abc", sample_rate=16000, channels=1, source="test")

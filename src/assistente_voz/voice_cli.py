@@ -201,7 +201,8 @@ class CompletudeRenderer:
         self._started_at = started_at
         self._line_width = line_width
         self._utterance_count = 0
-        self._partial_dirty = False  # has a partial line been written?
+        self._partial_dirty = False    # STT live-caption partial line pending
+        self._streaming_dirty = False  # streaming token line open (no \n yet)
 
     def __call__(self, ev: CaptionEvent) -> None:
         with self._lock:
@@ -233,11 +234,34 @@ class CompletudeRenderer:
     def summary(self) -> None:
         print(f"\n[summary] {self._utterance_count} utterance(s) captured.", flush=True)
 
+    def assistant_token(self, token: str) -> None:
+        """Print a streaming token in-line without a newline."""
+        with self._lock:
+            if self._partial_dirty:
+                sys.stdout.write("\r" + " " * self._line_width + "\r")
+                self._partial_dirty = False
+            sys.stdout.write(token)
+            self._streaming_dirty = True
+            sys.stdout.flush()
+
+    def assistant_reply_end(self, model: str, latency_ms: float, ttft_ms: float = 0.0) -> None:
+        """Close a streaming reply line with metadata."""
+        with self._lock:
+            ttft_str = f" ttft={ttft_ms:.0f}ms" if ttft_ms > 0 else ""
+            sys.stdout.write(f"\n[assistant model={model} latency={latency_ms:.0f}ms{ttft_str}]\n")
+            self._streaming_dirty = False
+            sys.stdout.flush()
+
     def assistant_reply(self, text: str, model: str, latency_ms: float) -> None:
         with self._lock:
             if self._partial_dirty:
                 sys.stdout.write("\r" + " " * self._line_width + "\r")
                 self._partial_dirty = False
+            if self._streaming_dirty:
+                # Close an open streaming token line (e.g. when ttft_ms rounds to 0
+                # but tokens were already emitted, or when called as streaming fallback).
+                sys.stdout.write("\n")
+                self._streaming_dirty = False
             sys.stdout.write(f"[assistant model={model} latency={latency_ms:.0f}ms] {text}\n")
             sys.stdout.flush()
 
@@ -246,6 +270,10 @@ class CompletudeRenderer:
             if self._partial_dirty:
                 sys.stdout.write("\r" + " " * self._line_width + "\r")
                 self._partial_dirty = False
+            if self._streaming_dirty:
+                # Close the open streaming token line before printing the error.
+                sys.stdout.write("\n")
+                self._streaming_dirty = False
             sys.stdout.write(f"[assistant-error] {type(exc).__name__}: {exc}\n")
             sys.stdout.flush()
 
@@ -338,13 +366,52 @@ class LLMWorker:
                 user_text = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+
+            user_added = False
             try:
-                reply, model, latency_ms = _query_llm_once(
-                    text=user_text, llm=self._llm, state=self._state
-                )
-                self._renderer.assistant_reply(text=reply, model=model, latency_ms=latency_ms)
+                self._state.add(role="user", content=user_text)
+                user_added = True
+
+                try:
+                    response = self._llm.stream(
+                        state=self._state,
+                        on_token=self._renderer.assistant_token,
+                    )
+                except (AttributeError, NotImplementedError):
+                    # Safety net for LLM objects that expose stream() but raise immediately,
+                    # or for non-LLMService objects injected in tests/custom integrations.
+                    # In production (LLMService), stream() already handles these cases
+                    # internally and never raises here.
+                    response = self._llm.complete(self._state)
+
+                self._state.add(role="assistant", content=response.text)
+
+                if response.time_to_first_token_ms > 0:
+                    self._renderer.assistant_reply_end(
+                        model=response.model,
+                        latency_ms=response.latency_ms,
+                        ttft_ms=response.time_to_first_token_ms,
+                    )
+                else:
+                    self._renderer.assistant_reply(
+                        text=response.text,
+                        model=response.model,
+                        latency_ms=response.latency_ms,
+                    )
+
             except Exception as exc:  # noqa: BLE001
                 self._renderer.assistant_error(exc)
+                if user_added:
+                    # User was added to state but assistant was not (stream/complete failed).
+                    # Insert a placeholder so the next LLM call doesn't receive two
+                    # consecutive user messages, which confuses most chat models.
+                    # The placeholder is visible in the conversation history sent to the LLM
+                    # and may influence its next response — acceptable trade-off versus a
+                    # broken context with duplicate roles.
+                    try:
+                        self._state.add(role="assistant", content="[resposta interrompida por erro]")
+                    except Exception:  # noqa: BLE001
+                        pass
 
 
 # ── modes ─────────────────────────────────────────────────────────────────────

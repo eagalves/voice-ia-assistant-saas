@@ -7,12 +7,14 @@ from assistente_voz.orchestrator import TurnResult
 
 @dataclass
 class UISessionState:
-    status: str = "idle"  # idle | listening | processing | error
+    status: str = "idle"  # idle | listening | processing | streaming | error
     last_transcription: str = ""
     last_response: str = ""
     fallback_pending: bool = False
     pending_transcription: str = ""
     final_notes: list[str] = field(default_factory=list)
+    streaming_response: str = ""
+    is_streaming: bool = False
 
 
 class TextUI:
@@ -27,6 +29,17 @@ class TextUI:
     def on_processing(self) -> None:
         self.state.status = "processing"
 
+    def on_stream_start(self) -> None:
+        self.state.status = "streaming"
+        self.state.is_streaming = True
+        self.state.streaming_response = ""
+
+    def on_token(self, token: str) -> None:
+        self.state.streaming_response += token
+
+    def on_stream_end(self) -> None:
+        self.state.is_streaming = False
+
     def on_turn_result(self, result: TurnResult) -> None:
         if result.ok:
             self.state.status = "listening"
@@ -34,6 +47,8 @@ class TextUI:
             self.state.last_response = result.assistant_response or ""
             self.state.fallback_pending = False
             self.state.pending_transcription = ""
+            self.state.is_streaming = False
+            self.state.streaming_response = ""
             return
 
         # Handle STT fallback path without ending the session.
@@ -41,10 +56,14 @@ class TextUI:
             self.state.status = "listening"
             self.state.fallback_pending = True
             self.state.pending_transcription = result.transcription or ""
+            self.state.is_streaming = False
+            self.state.streaming_response = ""
             return
 
         # Generic errors keep session alive in fail-soft mode.
         self.state.status = "error"
+        self.state.is_streaming = False
+        self.state.streaming_response = ""
 
     def submit_manual_fallback(self, text: str, confirmed: bool) -> str:
         """Accept manual input only when short confirmation is explicit."""
@@ -70,4 +89,6 @@ class TextUI:
             "transcription": self.state.last_transcription,
             "response": self.state.last_response,
             "fallback_pending": self.state.fallback_pending,
+            "is_streaming": self.state.is_streaming,
+            "streaming_response": self.state.streaming_response,
         }

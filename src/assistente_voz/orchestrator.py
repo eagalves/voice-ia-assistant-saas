@@ -25,6 +25,16 @@ class NullMetrics:
         return None
 
 
+class StreamObserver(Protocol):
+    """Hooks the orchestrator calls during LLM streaming to drive a UI."""
+
+    def on_stream_start(self) -> None: ...
+
+    def on_token(self, token: str) -> None: ...
+
+    def on_stream_end(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class TurnResult:
     """External behaviour contract for one processed audio segment."""
@@ -39,6 +49,7 @@ class TurnResult:
     llm_latency_ms: float | None
     e2e_latency_ms: float
     error_code: str | None = None
+    time_to_first_token_ms: float | None = None
 
 
 class VoiceOrchestrator:
@@ -51,12 +62,14 @@ class VoiceOrchestrator:
         state: ConversationState,
         metrics: MetricsSink | None = None,
         logger: logging.Logger | None = None,
+        stream_observer: StreamObserver | None = None,
     ) -> None:
         self._stt = stt
         self._llm = llm
         self._state = state
         self._metrics = metrics or NullMetrics()
         self._logger = logger or logging.getLogger("assistente_voz.orchestrator")
+        self._stream_observer = stream_observer
 
         # Ensure profile-derived system prompt is always present before first turn.
         self._llm.apply_profile(self._state)
@@ -139,12 +152,18 @@ class VoiceOrchestrator:
 
         # ---- LLM stage ----
         llm_start = time.perf_counter()
+        observer = self._stream_observer
+        on_token = observer.on_token if observer is not None else (lambda _: None)
+        if observer is not None:
+            observer.on_stream_start()
         try:
-            llm_response = self._llm.complete(self._state)
+            llm_response = self._llm.stream(self._state, on_token=on_token)
             llm_latency_ms = (time.perf_counter() - llm_start) * 1000
         except Exception as exc:  # noqa: BLE001
             llm_latency_ms = (time.perf_counter() - llm_start) * 1000
             e2e_latency_ms = (time.perf_counter() - e2e_start) * 1000
+            if observer is not None:
+                observer.on_stream_end()
             self._metrics.observe("llm.latency_ms", llm_latency_ms)
             self._metrics.observe("e2e.latency_ms", e2e_latency_ms)
             self._logger.error("module=llm code=LLM_EXCEPTION err=%s", type(exc).__name__)
@@ -160,8 +179,13 @@ class VoiceOrchestrator:
                 e2e_latency_ms=e2e_latency_ms,
                 error_code="LLM_EXCEPTION",
             )
+        if observer is not None:
+            observer.on_stream_end()
 
         self._metrics.observe("llm.latency_ms", llm_latency_ms)
+        ttft_ms = llm_response.time_to_first_token_ms or 0.0
+        ttft_mode = "streaming" if ttft_ms > 0 else "fallback"
+        self._metrics.observe("llm.ttft_ms", ttft_ms, tags={"mode": ttft_mode})
 
         # ---- state update (assistant reply) ----
         self._state.add(role="assistant", content=llm_response.text)
@@ -180,4 +204,5 @@ class VoiceOrchestrator:
             llm_latency_ms=llm_latency_ms,
             e2e_latency_ms=e2e_latency_ms,
             error_code=None,
+            time_to_first_token_ms=llm_response.time_to_first_token_ms or None,
         )

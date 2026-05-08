@@ -481,25 +481,18 @@ Objetivo deste bloco: manter trilha do que foi alterado apos a entrega das issue
 - [x] `git status` limpo apos remocao.
 - [x] Regra preventiva em `.gitignore` revisada.
 
-## Issue 17 - Seguranca de Credenciais em Ambiente e Historico
+## ~~Issue 17 - Seguranca de Credenciais em Ambiente e Historico~~
 
 **Type:** AFK
 **Blocked by:** None
-**Status:** Open
-**Prioridade:** Alta
+**Status:** Falso Positivo — Nao Implementar
+**Prioridade:** ~~Alta~~
 
-### Problema
-- Houve registro de commit com contexto de chave (`add gemini key`) e exposicao de credenciais em fluxo de trabalho.
-
-### O que fazer
-- Rotacionar chaves OpenAI/Gemini imediatamente.
-- Garantir que `.env` continue fora do versionamento.
-- Revisar historico recente para remover segredos, se aplicavel.
-
-### Criterio de aceite
-- [ ] Chaves antigas revogadas e novas chaves em uso.
-- [ ] Nenhum segredo presente em arquivos versionados.
-- [ ] Procedimento de rotacao documentado no repo.
+> **Investigado e encerrado.** O commit `77ed631 add Ollama as local IA` foi auditado:
+> os campos `LLM_API_KEY=` e `GEMINI_API_KEY=` foram adicionados ao `.env.example`
+> com valores **vazios** — nenhuma chave real foi commitada.
+> O `.env` esta corretamente listado no `.gitignore` e nunca entrou no historico git.
+> Nao ha nada a rotacionar nem a remover.
 
 ## Issue 18 - Suporte Planejado a LLM Local via Ollama com Fallback Tecnico
 
@@ -791,7 +784,7 @@ resultando em transcricao de voz em velocidade 3x incorreta. Esse cenario esta c
 
 **Type:** Performance / UX
 **Blocked by:** Issue 7, Issue 12
-**Status:** Open
+**Status:** Done
 **Prioridade:** Media
 
 ### Problema

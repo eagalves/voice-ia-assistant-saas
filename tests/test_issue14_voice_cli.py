@@ -15,6 +15,7 @@ class _FakeLLMResponse:
     text: str
     model: str
     latency_ms: float
+    time_to_first_token_ms: float = 0.0
 
 
 class _FakeLLM:

@@ -6,7 +6,31 @@
       "Bash(Sort-Object FullName)",
       "Bash(python -m pytest tests/test_issue22_sample_rate.py -v)",
       "Bash(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_issue22_sample_rate.py -v)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(git log *)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m pytest tests\\\\test_issue27_llm_streaming.py tests\\\\test_issue6_llm.py tests\\\\test_issue23_llm_error_classification.py tests\\\\test_issue24_llm_backoff.py -v)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest tests/test_issue27_llm_streaming.py tests/test_issue6_llm.py tests/test_issue23_llm_error_classification.py tests/test_issue24_llm_backoff.py -v)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest tests/test_issue20_llm_worker.py -v)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest --tb=short -q)",
+      "Bash(git stash *)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest tests/test_issue19_medical_assertiveness.py -q)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import assistente_voz.conversation_state as cs; s = cs.ConversationState\\(\\); s.add\\('user','x'\\); msgs = s.to_llm_messages\\(\\); print\\(type\\(msgs[0]\\), msgs[0]\\)\")",
+      "Bash(python -m pytest tests/test_issue27_llm_streaming.py tests/test_issue20_llm_worker.py tests/test_issue14_voice_cli.py -v)",
+      "Bash(where uv *)",
+      "Bash(where py *)",
+      "Bash(py -3 -m pytest \"C:\\\\Users\\\\evandro\\\\OneDrive\\\\Documentos\\\\Projetos\\\\assistente_de_voz\\\\tests\\\\test_issue27_llm_streaming.py\" \"C:\\\\Users\\\\evandro\\\\OneDrive\\\\Documentos\\\\Projetos\\\\assistente_de_voz\\\\tests\\\\test_issue20_llm_worker.py\" \"C:\\\\Users\\\\evandro\\\\OneDrive\\\\Documentos\\\\Projetos\\\\assistente_de_voz\\\\tests\\\\test_issue14_voice_cli.py\" -v --tb=short)",
+      "Bash(pip show *)",
+      "Bash(pip3 show *)",
+      "Bash(pip list *)",
+      "Skill(update-config)",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pip show pytest)",
+      "Bash(where pytest *)",
+      "PowerShell(Get-Command *)",
+      "Bash(.venv/Scripts/pytest tests/ -x -q)",
+      "Bash(.venv/Scripts/pytest tests/test_issue19_medical_assertiveness.py -v)",
+      "Bash(.venv/Scripts/pytest tests/ -q)",
+      "Bash(.venv/Scripts/pytest tests/)"
     ]
   }
 }
