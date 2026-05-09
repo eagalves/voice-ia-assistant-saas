@@ -3,16 +3,13 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from ..db.models import DraftFeedback
+from .base import TenantRepository
 
 
-class FeedbackRepository:
-    def __init__(self, db: AsyncSession, tenant_id: str):
-        self.db = db
-        self.tenant_id = uuid.UUID(tenant_id)
-
+class FeedbackRepository(TenantRepository):
     async def insert(
         self,
         *,
@@ -38,3 +35,11 @@ class FeedbackRepository:
         self.db.add(row)
         await self.db.flush()
         return row
+
+    async def list_by_session(self, session_id: uuid.UUID) -> list[DraftFeedback]:
+        stmt = self._scope_tenant(
+            select(DraftFeedback).where(DraftFeedback.session_id == session_id),
+            DraftFeedback,
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())

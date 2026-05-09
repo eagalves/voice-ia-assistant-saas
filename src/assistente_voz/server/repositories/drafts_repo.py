@@ -5,20 +5,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.models import Draft
+from .base import TenantRepository
 
 
-class DraftsRepository:
-    def __init__(self, db: AsyncSession, tenant_id: str):
-        self.db = db
-        self.tenant_id = uuid.UUID(tenant_id)
-
+class DraftsRepository(TenantRepository):
     async def get_by_session(self, session_id: uuid.UUID) -> Draft | None:
-        stmt = select(Draft).where(
-            Draft.session_id == session_id,
-            Draft.tenant_id == self.tenant_id,
+        stmt = self._scope_tenant(
+            select(Draft).where(Draft.session_id == session_id), Draft
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()

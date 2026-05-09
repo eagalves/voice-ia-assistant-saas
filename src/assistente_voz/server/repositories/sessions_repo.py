@@ -5,25 +5,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.models import Session
+from .base import TenantRepository
 
 AUTO_FINALIZE_AFTER = timedelta(hours=6)
 
 
-class SessionsRepository:
-    """Tenant-aware CRUD for `sessions`.
-
-    Issue #10 will replace direct ORM access with a `TenantRepository`
-    base that enforces `WHERE tenant_id = :tid` by construction. For now
-    the tenant_id is passed explicitly on every call to lock in the
-    pattern.
-    """
-
-    def __init__(self, db: AsyncSession, tenant_id: str):
-        self.db = db
-        self.tenant_id = uuid.UUID(tenant_id)
+class SessionsRepository(TenantRepository):
+    """Tenant-aware CRUD for `sessions`."""
 
     async def create(
         self,
@@ -56,9 +46,8 @@ class SessionsRepository:
         return session
 
     async def get(self, session_id: uuid.UUID) -> Session | None:
-        stmt = select(Session).where(
-            Session.id == session_id,
-            Session.tenant_id == self.tenant_id,
+        stmt = self._scope_tenant(
+            select(Session).where(Session.id == session_id), Session
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()

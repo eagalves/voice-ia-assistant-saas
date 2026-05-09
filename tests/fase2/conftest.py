@@ -7,10 +7,24 @@ Postgres source-of-truth resolution (in priority order):
    on first use. Requires Docker on the host.
 
 If neither is available, the whole module is skipped with a clear message.
+
+Schema is applied via Alembic ``upgrade head`` so RLS policies (Issue #10
+migration ``0002_rls_policies``) and any future migration are exercised
+end-to-end during tests.
+
+Loop scoping strategy:
+- Schema setup is a synchronous session-scoped fixture that internally calls
+  ``asyncio.run`` for the pre-clean — sync context dodges the
+  "loop already running" trap and keeps the global asyncio config at the
+  default (function-scoped tests), so Phase 1 tests are unaffected.
+- The async engine is recreated per test (function-scoped). NullPool means
+  no connection persists across tests, so each test runs in its own loop
+  without leaking handles.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -25,7 +39,9 @@ from sqlalchemy.pool import NullPool
 from assistente_voz.server import app as server_app_module
 from assistente_voz.server.config import DEFAULT_TENANT_ID
 from assistente_voz.server.db import session as db_session_module
-from assistente_voz.server.db.base import Base
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 
 
 def _to_async_url(url: str) -> str:
@@ -36,6 +52,30 @@ def _to_async_url(url: str) -> str:
     if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql+asyncpg://", 1)
     return url
+
+
+def _alembic_command(database_url: str, target: str) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    os.environ["DATABASE_URL"] = database_url
+    cfg = Config(str(ALEMBIC_INI))
+    if target == "downgrade-base":
+        command.downgrade(cfg, "base")
+    else:
+        command.upgrade(cfg, target)
+
+
+async def _drop_all_objects(database_url: str) -> None:
+    engine = create_async_engine(database_url, future=True, poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql(
+                "DROP TABLE IF EXISTS draft_feedback, drafts, sessions, "
+                "alembic_version CASCADE"
+            )
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture(scope="session")
@@ -70,27 +110,29 @@ def database_url() -> Iterator[str]:
         container.stop()
 
 
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def db_engine(database_url: str) -> AsyncIterator[AsyncEngine]:
-    # NullPool: every checkout opens a fresh asyncpg connection and discards
-    # it on release. This avoids "another operation in progress" when the
-    # session-scoped engine is shared across tests that may bounce between
-    # nested transactions or different async contexts.
-    engine = create_async_engine(database_url, future=True, poolclass=NullPool)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+@pytest.fixture(scope="session")
+def migrated_database(database_url: str) -> Iterator[str]:
+    """Sync session-scoped fixture: pre-clean + alembic upgrade head."""
+    asyncio.run(_drop_all_objects(database_url))
+    _alembic_command(database_url, "head")
+    yield database_url
+    asyncio.run(_drop_all_objects(database_url))
+
+
+@pytest_asyncio.fixture
+async def db_engine(migrated_database: str) -> AsyncIterator[AsyncEngine]:
+    engine = create_async_engine(
+        migrated_database, future=True, poolclass=NullPool
+    )
     db_session_module.override_engine(engine)
     try:
         yield engine
     finally:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
         await engine.dispose()
         await db_session_module.reset_engine()
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def truncate_tables(db_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
     async with db_engine.begin() as conn:
@@ -104,7 +146,7 @@ def app(db_engine: AsyncEngine):
     return server_app_module.create_app()
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture
 async def client(app, truncate_tables) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -127,4 +169,4 @@ def default_tenant_id() -> str:
 
 @pytest.fixture
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return REPO_ROOT

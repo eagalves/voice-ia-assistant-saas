@@ -17,7 +17,10 @@ from assistente_voz.server.db import models  # noqa: F401  (register models)
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False keeps loggers configured by the host
+    # process intact (notably during pytest sessions where caplog and the
+    # `assistente_voz.*` loggers are already in place).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
