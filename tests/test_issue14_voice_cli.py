@@ -54,6 +54,17 @@ class _FakeStreamingTranscriber:
         return None
 
 
+class _FakeStreamingTranscriberLowConf:
+    def __init__(self, **kwargs) -> None:
+        self._on_event = kwargs["on_event"]
+
+    def start(self) -> None:
+        self._on_event(CaptionEvent(text="fala duvidosa", is_final=True, confidence=0.20, audio_ms=1300))
+
+    def stop(self, timeout: float = 5.0) -> None:  # noqa: ARG002
+        return None
+
+
 def test_text_mode_calls_llm_and_prints_response(monkeypatch, capsys):
     fake_llm = _FakeLLM()
     state = ConversationState()
@@ -96,6 +107,7 @@ def test_voice_mode_calls_llm_for_each_final_caption(monkeypatch, capsys):
         partial_interval_ms=700,
         hang_ms=1200,
         preroll_ms=400,
+        min_final_conf=0.55,
     )
 
     code = run_voice_mode(args)
@@ -105,3 +117,36 @@ def test_voice_mode_calls_llm_for_each_final_caption(monkeypatch, capsys):
     assert fake_llm.calls == 2
     assert "Resposta para: fala final um" in out
     assert "Resposta para: fala final dois" in out
+
+
+def test_voice_mode_skips_low_confidence_final_before_llm(monkeypatch, capsys):
+    fake_llm = _FakeLLM()
+    state = ConversationState()
+
+    monkeypatch.setattr("assistente_voz.voice_cli._build_llm_runtime", lambda: (fake_llm, state))
+    monkeypatch.setattr("assistente_voz.voice_cli.MicrophoneSource", _FakeMicrophoneSource)
+    monkeypatch.setattr("assistente_voz.voice_cli._make_final_backend", lambda debug: object())
+    monkeypatch.setattr("assistente_voz.voice_cli._warmup", lambda backend, label, debug: None)
+    monkeypatch.setattr("assistente_voz.voice_cli.StreamingTranscriber", _FakeStreamingTranscriberLowConf)
+
+    args = argparse.Namespace(
+        duration=0.01,
+        no_tts=True,
+        debug_audio=False,
+        list_devices=False,
+        input_device=None,
+        live_caption=False,
+        caption_window=8.0,
+        text=None,
+        vad_rms=250.0,
+        partial_interval_ms=700,
+        hang_ms=1200,
+        preroll_ms=400,
+        min_final_conf=0.55,
+    )
+
+    code = run_voice_mode(args)
+    _ = capsys.readouterr().out
+
+    assert code == 0
+    assert fake_llm.calls == 0

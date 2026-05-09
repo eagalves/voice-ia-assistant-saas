@@ -30,7 +30,8 @@
       "Bash(.venv/Scripts/pytest tests/ -x -q)",
       "Bash(.venv/Scripts/pytest tests/test_issue19_medical_assertiveness.py -v)",
       "Bash(.venv/Scripts/pytest tests/ -q)",
-      "Bash(.venv/Scripts/pytest tests/)"
+      "Bash(.venv/Scripts/pytest tests/)",
+      "Bash(.venv/Scripts/python.exe *)"
     ]
   }
 }
