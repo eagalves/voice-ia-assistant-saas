@@ -1,0 +1,534 @@
+components:
+  schemas:
+    CloseSessionOut:
+      properties:
+        closed_at:
+          format: date-time
+          title: Closed At
+          type: string
+        draft_status:
+          const: pending
+          title: Draft Status
+          type: string
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+      required:
+      - session_id
+      - closed_at
+      - draft_status
+      title: CloseSessionOut
+      type: object
+    CreateSessionIn:
+      additionalProperties: false
+      properties:
+        actor_role:
+          enum:
+          - doctor
+          - patient
+          - physician
+          - candidate
+          - interviewer
+          title: Actor Role
+          type: string
+        plan:
+          enum:
+          - basico
+          - medio
+          - premium
+          title: Plan
+          type: string
+        seniority:
+          anyOf:
+          - enum:
+            - junior
+            - pleno
+            - senior
+            type: string
+          - type: 'null'
+          title: Seniority
+        session_kind:
+          enum:
+          - medical
+          - general_interviewer
+          - clinical_pharmacist_interviewer
+          - clinical_nurse_interviewer
+          title: Session Kind
+          type: string
+      required:
+      - session_kind
+      - actor_role
+      - plan
+      title: CreateSessionIn
+      type: object
+    CreateSessionOut:
+      properties:
+        auto_finalize_at:
+          format: date-time
+          title: Auto Finalize At
+          type: string
+        plan_features:
+          $ref: '#/components/schemas/PlanFeatures'
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+        session_kind:
+          enum:
+          - medical
+          - general_interviewer
+          - clinical_pharmacist_interviewer
+          - clinical_nurse_interviewer
+          title: Session Kind
+          type: string
+        ws_token:
+          format: uuid
+          title: Ws Token
+          type: string
+        ws_url:
+          title: Ws Url
+          type: string
+      required:
+      - session_id
+      - ws_url
+      - ws_token
+      - session_kind
+      - plan_features
+      - auto_finalize_at
+      title: CreateSessionOut
+      type: object
+    DraftFailedOut:
+      properties:
+        content:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Content
+        draft_status:
+          const: failed
+          default: failed
+          title: Draft Status
+          type: string
+        error:
+          const: DRAFT_MATERIALIZATION_FAILED
+          default: DRAFT_MATERIALIZATION_FAILED
+          title: Error
+          type: string
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        partial:
+          default: true
+          title: Partial
+          type: boolean
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+      required:
+      - session_id
+      title: DraftFailedOut
+      type: object
+    DraftFeedbackIn:
+      additionalProperties: false
+      properties:
+        actor_sub:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor Sub
+        chars_edited:
+          minimum: 0.0
+          title: Chars Edited
+          type: integer
+        chars_original:
+          minimum: 0.0
+          title: Chars Original
+          type: integer
+        fields_corrected:
+          items:
+            type: string
+          title: Fields Corrected
+          type: array
+      required:
+      - chars_original
+      - chars_edited
+      title: DraftFeedbackIn
+      type: object
+    DraftFeedbackOut:
+      properties:
+        accepted:
+          default: true
+          title: Accepted
+          type: boolean
+        correction_ratio:
+          title: Correction Ratio
+          type: number
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+      required:
+      - session_id
+      - correction_ratio
+      title: DraftFeedbackOut
+      type: object
+    DraftPendingOut:
+      properties:
+        draft_status:
+          const: pending
+          default: pending
+          title: Draft Status
+          type: string
+        error:
+          const: DRAFT_NOT_READY
+          default: DRAFT_NOT_READY
+          title: Error
+          type: string
+        retry_after_seconds:
+          default: 5
+          title: Retry After Seconds
+          type: integer
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+      required:
+      - session_id
+      title: DraftPendingOut
+      type: object
+    DraftReadyOut:
+      properties:
+        content:
+          additionalProperties: true
+          title: Content
+          type: object
+        draft_status:
+          const: ready
+          default: ready
+          title: Draft Status
+          type: string
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+        updated_at:
+          format: date-time
+          title: Updated At
+          type: string
+      required:
+      - session_id
+      - content
+      - updated_at
+      title: DraftReadyOut
+      type: object
+    DraftRetryOut:
+      properties:
+        draft_status:
+          const: pending
+          default: pending
+          title: Draft Status
+          type: string
+        retry_count:
+          title: Retry Count
+          type: integer
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+      required:
+      - session_id
+      - retry_count
+      title: DraftRetryOut
+      type: object
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          title: Detail
+          type: array
+      title: HTTPValidationError
+      type: object
+    PlanFeatures:
+      properties:
+        llm_proactive_questions:
+          title: Llm Proactive Questions
+          type: boolean
+        llm_prontuario_model:
+          title: Llm Prontuario Model
+          type: string
+        llm_realtime_red_flag:
+          title: Llm Realtime Red Flag
+          type: boolean
+        session_max_minutes:
+          title: Session Max Minutes
+          type: integer
+        stt_mode:
+          enum:
+          - batch
+          - streaming
+          title: Stt Mode
+          type: string
+      required:
+      - stt_mode
+      - llm_realtime_red_flag
+      - llm_proactive_questions
+      - llm_prontuario_model
+      - session_max_minutes
+      title: PlanFeatures
+      type: object
+    TokenRefreshOut:
+      properties:
+        issued_at:
+          format: date-time
+          title: Issued At
+          type: string
+        session_id:
+          format: uuid
+          title: Session Id
+          type: string
+        ws_token:
+          format: uuid
+          title: Ws Token
+          type: string
+      required:
+      - session_id
+      - ws_token
+      - issued_at
+      title: TokenRefreshOut
+      type: object
+    ValidationError:
+      properties:
+        ctx:
+          title: Context
+          type: object
+        input:
+          title: Input
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          title: Location
+          type: array
+        msg:
+          title: Message
+          type: string
+        type:
+          title: Error Type
+          type: string
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+      type: object
+info:
+  description: API HTTP do componente assistente_de_voz consumida pelo app de telemedicina
+    (Controlador LGPD). Fase 2.0 — single-tenant operacional, multi-tenant ready.
+  title: Assistente de Voz — Componente Telemedicina
+  version: 1.0.0
+openapi: 3.1.0
+paths:
+  /v1/sessions:
+    post:
+      operationId: create_session_v1_sessions_post
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency-Key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionIn'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateSessionOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Session
+      tags:
+      - sessions
+  /v1/sessions/{session_id}/close:
+    post:
+      operationId: close_session_v1_sessions__session_id__close_post
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          format: uuid
+          title: Session Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloseSessionOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Close Session
+      tags:
+      - sessions
+  /v1/sessions/{session_id}/draft:
+    get:
+      operationId: get_draft_v1_sessions__session_id__draft_get
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          format: uuid
+          title: Session Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftReadyOut'
+          description: Successful Response
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftPendingOut'
+          description: Accepted
+        '404':
+          description: Session not found
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftFailedOut'
+          description: Internal Server Error
+      summary: Get Draft
+      tags:
+      - drafts
+  /v1/sessions/{session_id}/draft/feedback:
+    post:
+      operationId: submit_feedback_v1_sessions__session_id__draft_feedback_post
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          format: uuid
+          title: Session Id
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftFeedbackIn'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftFeedbackOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Submit Feedback
+      tags:
+      - drafts
+  /v1/sessions/{session_id}/draft/retry:
+    post:
+      operationId: retry_draft_v1_sessions__session_id__draft_retry_post
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          format: uuid
+          title: Session Id
+          type: string
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftRetryOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Retry Draft
+      tags:
+      - drafts
+  /v1/sessions/{session_id}/token/refresh:
+    post:
+      description: 'Issue #1 stub.
+
+
+        Returns a fresh `ws_token` and persists it on the row, but does NOT
+
+        invalidate the old token in Redis (Issue #6) nor publish a revocation
+
+        event. The current WS connection (if any) is unaffected.'
+      operationId: refresh_ws_token_v1_sessions__session_id__token_refresh_post
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          format: uuid
+          title: Session Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenRefreshOut'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Refresh Ws Token
+      tags:
+      - sessions

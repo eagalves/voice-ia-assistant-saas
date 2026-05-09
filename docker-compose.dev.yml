@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: avoz-pg-dev
+    environment:
+      POSTGRES_USER: avoz
+      POSTGRES_PASSWORD: avoz
+      POSTGRES_DB: avoz
+    ports:
+      - "5432:5432"
+    volumes:
+      - avoz_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U avoz -d avoz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  avoz_pg_data:
