@@ -674,19 +674,19 @@ para o campo.
 `value` do campo.
 
 ### Acceptance criteria
-- [ ] `DRAFT_FIELD_CONFIDENCE_ENABLED=0` → draft não contém `confidence_class` nem
+- [x] `DRAFT_FIELD_CONFIDENCE_ENABLED=0` → draft não contém `confidence_class` nem
   `field_confidence` em nenhum campo
-- [ ] `DRAFT_FIELD_CONFIDENCE_ENABLED=1` → todos os campos do draft contêm
+- [x] `DRAFT_FIELD_CONFIDENCE_ENABLED=1` → todos os campos do draft contêm
   `confidence_class` com valor em `{revisar, medio, alto}`
-- [ ] Campo com `field_confidence=0.42` → `confidence_class=revisar`
-- [ ] Campo com `field_confidence=0.67` → `confidence_class=medio`
-- [ ] Campo com `field_confidence=0.85` → `confidence_class=alto`
-- [ ] `FIELD_CONFIDENCE_REVIEW_THRESHOLD=0.70` env → threshold respeitado no runtime
-- [ ] `FIELD_CONFIDENCE_REVIEW_THRESHOLD > FIELD_CONFIDENCE_HIGH_THRESHOLD` → warning +
+- [x] Campo com `field_confidence=0.42` → `confidence_class=revisar`
+- [x] Campo com `field_confidence=0.67` → `confidence_class=medio`
+- [x] Campo com `field_confidence=0.85` → `confidence_class=alto`
+- [x] `FIELD_CONFIDENCE_REVIEW_THRESHOLD=0.70` env → threshold respeitado no runtime
+- [x] `FIELD_CONFIDENCE_REVIEW_THRESHOLD > FIELD_CONFIDENCE_HIGH_THRESHOLD` → warning +
   fallback para defaults
-- [ ] Segmento `uncertain=True` → aparece em `uncertain_segments` e prefixado `[incerto]`
+- [x] Segmento `uncertain=True` → aparece em `uncertain_segments` e prefixado `[incerto]`
   no `value`
-- [ ] Feature flag pode ser alterada entre Sessões sem restart (relida no início de cada
+- [x] Feature flag pode ser alterada entre Sessões sem restart (relida no início de cada
   materialização de draft)
 
 ### Blocked by

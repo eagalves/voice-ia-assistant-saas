@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 
 from .db.session import get_sessionmaker
 from .event_stream import EventStreamClient, FakeEventStream
+from .field_confidence import enrich_draft_content, get_field_confidence_config
 from .redis_keys import session_events_key
 from .repositories.drafts_repo import DraftsRepository
 
@@ -53,11 +54,12 @@ async def _default_content_builder(
     """
     key = session_events_key(tenant_id, session_id)
     entries = await stream_client.xrange(key)
-    return {
+    result = {
         "events": [fields for _, fields in entries],
         "event_count": len(entries),
         "materialized_at": datetime.now(timezone.utc).isoformat(),
     }
+    return enrich_draft_content(result, get_field_confidence_config())
 
 
 class MaterializationWorker:
