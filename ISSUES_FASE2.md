@@ -87,19 +87,19 @@ class SessionContext:
   (`STT_EMPTY`, `LLM_ERR_UNAVAILABLE` etc.) preservados sem rename
 
 ### Acceptance criteria
-- [ ] `POST /v1/sessions` com `session_kind=medical` e `plan=premium` retorna `201` com campos
+- [x] `POST /v1/sessions` com `session_kind=medical` e `plan=premium` retorna `201` com campos
   `session_id`, `ws_url`, `ws_token`, `plan_features` preenchidos
-- [ ] `SessionContext` com `tenant_id` default é injetado em todos os resolvers (validado por
+- [x] `SessionContext` com `tenant_id` default é injetado em todos os resolvers (validado por
   assert nos testes de integração)
-- [ ] `GET /draft` retorna `202` quando `draft_status=pending` e `200` quando `ready`
-- [ ] `GET /draft` retorna `500` com `partial:true` quando `failed`
-- [ ] `POST /v1/sessions/{id}/close` inicia materialização (muda `draft_status` para `pending`)
-- [ ] `plan_features` reflete corretamente os toggles do plano (`stt_mode=batch` para Básico,
+- [x] `GET /draft` retorna `202` quando `draft_status=pending` e `200` quando `ready`
+- [x] `GET /draft` retorna `500` com `partial:true` quando `failed`
+- [x] `POST /v1/sessions/{id}/close` inicia materialização (muda `draft_status` para `pending`)
+- [x] `plan_features` reflete corretamente os toggles do plano (`stt_mode=batch` para Básico,
   `streaming` para Médio/Premium)
-- [ ] Hard caps registrados na Sessão: `auto_finalize_at = created_at + 6h`
-- [ ] OpenAPI `v1.yaml` gerado e válido (sem erros de schema)
-- [ ] Todos os endpoints protegidos rejeitam request sem `Authorization: Bearer` com `401`
-- [ ] Novos error codes seguem namespace `<DOMAIN>_<COMPONENT>_<REASON>`
+- [x] Hard caps registrados na Sessão: `auto_finalize_at = created_at + 6h`
+- [x] OpenAPI `v1.yaml` gerado e válido (sem erros de schema)
+- [x] Todos os endpoints protegidos rejeitam request sem `Authorization: Bearer` com `401`
+- [x] Novos error codes seguem namespace `<DOMAIN>_<COMPONENT>_<REASON>`
 
 ### Blocked by
 None — pode iniciar imediatamente
@@ -162,16 +162,16 @@ UTF-8 — canônico e determinístico
 diariamente (ou via pg_cron)
 
 ### Acceptance criteria
-- [ ] Request sem `Idempotency-Key` retorna `400 IDEMPOTENCY_KEY_MISSING`
-- [ ] Segundo POST idêntico (mesmo payload) dentro de 24h retorna `201` com body original e
+- [x] Request sem `Idempotency-Key` retorna `400 IDEMPOTENCY_KEY_MISSING`
+- [x] Segundo POST idêntico (mesmo payload) dentro de 24h retorna `201` com body original e
   header `Idempotency-Replayed: true`
-- [ ] Segundo POST com mesma chave mas payload diferente retorna `409
+- [x] Segundo POST com mesma chave mas payload diferente retorna `409
   IDEMPOTENCY_PAYLOAD_MISMATCH`
-- [ ] Chave de tenant A não colide com chave idêntica de tenant B (uniqueness por tenant_id)
-- [ ] Chave de `actor_sub=doctor1` não colide com chave idêntica de `actor_sub=doctor2`
-- [ ] `payload_hash` é SHA-256 canônico do body (testado com body com chaves fora de ordem)
-- [ ] Registro expirado (> 24h) resulta em nova Sessão criada normalmente
-- [ ] Migration Alembic com `downgrade()` obrigatório
+- [x] Chave de tenant A não colide com chave idêntica de tenant B (uniqueness por tenant_id)
+- [x] Chave de `actor_sub=doctor1` não colide com chave idêntica de `actor_sub=doctor2`
+- [x] `payload_hash` é SHA-256 canônico do body (testado com body com chaves fora de ordem)
+- [x] Registro expirado (> 24h) resulta em nova Sessão criada normalmente
+- [x] Migration Alembic com `downgrade()` obrigatório
 
 ### Blocked by
 - #1
@@ -247,22 +247,22 @@ janela de 5min.
 - Redis Stream expira 24h após close
 
 ### Acceptance criteria
-- [ ] Frame Opus 20ms recebido via WS é decodificado para PCM 16kHz mono sem erro
-- [ ] `seq` monotônico por stream — frame fora de ordem é aceito e marcado `late_arrival`
-- [ ] Reconexão dentro de 5s: handshake retorna `last_seq` correto e cliente não recebe
+- [x] Frame Opus 20ms recebido via WS é decodificado para PCM 16kHz mono sem erro
+- [x] `seq` monotônico por stream — frame fora de ordem é aceito e marcado `late_arrival`
+- [x] Reconexão dentro de 5s: handshake retorna `last_seq` correto e cliente não recebe
   duplicatas de eventos finais já emitidos
-- [ ] Overflow de queue (> 1s buffer) emite `STT_OVERFLOW` e mantém WS aberta
-- [ ] Ambas as streams WS (Médico + Paciente) de uma Sessão chegam ao mesmo container (sticky
+- [x] Overflow de queue (> 1s buffer) emite `STT_OVERFLOW` e mantém WS aberta
+- [x] Ambas as streams WS (Médico + Paciente) de uma Sessão chegam ao mesmo container (sticky
   routing validado em teste de integração com mock ALB)
-- [ ] Late arrival `server_timestamp_ms < watermark − 200ms` → `late_arrival:true` no evento
-- [ ] `events_late_arrival_ratio` exportado como métrica Prometheus
-- [ ] Drain: SIGTERM → `{"type":"drain","reconnect_in":30}` emitido em < 1s; container não
+- [x] Late arrival `server_timestamp_ms < watermark − 200ms` → `late_arrival:true` no evento
+- [x] `events_late_arrival_ratio` exportado como métrica Prometheus
+- [x] Drain: SIGTERM → `{"type":"drain","reconnect_in":30}` emitido em < 1s; container não
   aceita nova Sessão após SIGTERM; `ECS_CONTAINER_STOP_TIMEOUT=120` no task definition
-- [ ] Snapshot Postgres/Redis atualizado a cada 25 eventos para perfil `medical` (validado com
+- [x] Snapshot Postgres/Redis atualizado a cada 25 eventos para perfil `medical` (validado com
   mock de Redis)
-- [ ] `ConversationState` após reconexão pós-crash (snapshot + delta) equivale ao estado
+- [x] `ConversationState` após reconexão pós-crash (snapshot + delta) equivale ao estado
   completo (teste de equivalência com 100 eventos sintéticos)
-- [ ] Migration Alembic com `downgrade()` obrigatório para qualquer DDL novo
+- [x] Migration Alembic com `downgrade()` obrigatório para qualquer DDL novo
 
 ### Blocked by
 - #1
@@ -336,27 +336,27 @@ afetada.
 - Bateria RED_FLAG no web (Deepgram) — falha bloqueia go-live
 
 ### Acceptance criteria
-- [ ] `STT_CONFIDENCE=0.45` → segmentos com confidence < 0.45 recebem `uncertain=True`
-- [ ] `STT_CONFIDENCE` ausente → warning no log + efetivo `0.55`
-- [ ] `STT_CONFIDENCE=0.20` (abaixo de 0.30) → warning + fallback 0.55
-- [ ] Timeout Deepgram > 800ms → frame re-enfileirado para Whisper API (mock de timeout no
+- [x] `STT_CONFIDENCE=0.45` → segmentos com confidence < 0.45 recebem `uncertain=True`
+- [x] `STT_CONFIDENCE` ausente → warning no log + efetivo `0.55`
+- [x] `STT_CONFIDENCE=0.20` (abaixo de 0.30) → warning + fallback 0.55
+- [x] Timeout Deepgram > 800ms → frame re-enfileirado para Whisper API (mock de timeout no
   teste)
-- [ ] 3 falhas consecutivas Deepgram → circuit breaker abre + evento WS
+- [x] 3 falhas consecutivas Deepgram → circuit breaker abre + evento WS
   `stt_mode:fallback_batch` emitido
-- [ ] Whisper batch processa o áudio durante fallback sem perder Sessão
-- [ ] 5 health checks Deepgram OK após ≥ 60s → circuit breaker fecha + evento WS
+- [x] Whisper batch processa o áudio durante fallback sem perder Sessão
+- [x] 5 health checks Deepgram OK após ≥ 60s → circuit breaker fecha + evento WS
   `stt_mode:streaming` emitido
-- [ ] Perfil `medical` com `MEDICAL_STT_PARTIAL_ENABLED=0` (default): nenhum evento `partial`
+- [x] Perfil `medical` com `MEDICAL_STT_PARTIAL_ENABLED=0` (default): nenhum evento `partial`
   emitido via WS
-- [ ] Segmento `uncertain=True` → draft contém prefixo `[incerto]` para o campo
+- [x] Segmento `uncertain=True` → draft contém prefixo `[incerto]` para o campo
 - [ ] WER ≤ 10% na bateria de 50 frases clínicas (teste de aceitação pré-go-live)
-- [ ] `STTService.transcribe(...)` legacy não quebra (testes existentes do MVP passam)
+- [x] `STTService.transcribe(...)` legacy não quebra (testes existentes do MVP passam)
 
 ### Gap tests (Issue #3 — implementar junto com esta issue)
-- [ ] GAP-TTL1 — `FakeEventStream.expire()` registra TTL correto: após `close`, stream key tem TTL = `STREAM_TTL_SECONDS` (86400s)
-- [ ] GAP-SAD1 — cliente WS desconecta abruptamente durante `process_frame`: nenhuma exceção não tratada propaga; `unregister_drain_callback()` é chamado
-- [ ] GAP-WS1 — fluxo completo via `starlette.testclient` WebSocket: connect → enviar frame → receber `{"type":"status","reason":"STT_OVERFLOW"}` ao estourar fila (sem browser)
-- [ ] GAP-WS2 — reconexão testada pelo router: client envia `{"type":"reconnect"}` via TestClient WS e recebe handshake `{"type":"session_resumed","last_seq":N}`
+- [x] GAP-TTL1 — `FakeEventStream.expire()` registra TTL correto: após `close`, stream key tem TTL = `STREAM_TTL_SECONDS` (86400s)
+- [x] GAP-SAD1 — cliente WS desconecta abruptamente durante `process_frame`: nenhuma exceção não tratada propaga; `unregister_drain_callback()` é chamado
+- [x] GAP-WS1 — fluxo completo via `starlette.testclient` WebSocket: connect → enviar frame → receber `{"type":"status","reason":"STT_OVERFLOW"}` ao estourar fila (sem browser)
+- [x] GAP-WS2 — reconexão testada pelo router: client envia `{"type":"reconnect"}` via TestClient WS e recebe handshake `{"type":"session_resumed","last_seq":N}`
 
 ### Blocked by
 - #3
@@ -831,19 +831,19 @@ tenant. Isolamento deve ser imposto por construção, não por convenção.
   `{tenant_id}` como hash tag
 
 ### Acceptance criteria
-- [ ] `TenantRepository` injeta `WHERE tenant_id = :tid` em todos os SELECT/UPDATE/DELETE
+- [x] `TenantRepository` injeta `WHERE tenant_id = :tid` em todos os SELECT/UPDATE/DELETE
   (verificado por teste de integração com banco em memória SQLite ou Postgres local)
-- [ ] Import direto de `sqlalchemy.orm.Session` fora de `repositories/` → lint CI falha
-- [ ] Toda tabela tem coluna `tenant_id NOT NULL DEFAULT 'default-uuid'` (verificado via
+- [x] Import direto de `sqlalchemy.orm.Session` fora de `repositories/` → lint CI falha
+- [x] Toda tabela tem coluna `tenant_id NOT NULL DEFAULT 'default-uuid'` (verificado via
   reflexão Alembic)
-- [ ] Toda chave Redis de Sessão contém hash tag `{tenant_id}` (teste unitário com mock
+- [x] Toda chave Redis de Sessão contém hash tag `{tenant_id}` (teste unitário com mock
   Redis que valida formato de chave)
-- [ ] `test_tenant_isolation_cross_query`: query com `tenant_id=B` em dados de `tenant_id=A`
+- [x] `test_tenant_isolation_cross_query`: query com `tenant_id=B` em dados de `tenant_id=A`
   retorna vazio sem exceção
-- [ ] `sqlfluff` com regra custom bloqueia `SELECT` sem `tenant_id` em arquivo fora de
+- [x] `sqlfluff` com regra custom bloqueia `SELECT` sem `tenant_id` em arquivo fora de
   `repositories/` (testado com fixture de arquivo SQL violador)
-- [ ] Métricas Prometheus contêm label `tenant_id="default"` (verificado no mock registry)
-- [ ] Migration Alembic de RLS policies com `downgrade()` obrigatório
+- [x] Métricas Prometheus contêm label `tenant_id="default"` (verificado no mock registry)
+- [x] Migration Alembic de RLS policies com `downgrade()` obrigatório
 
 ### Blocked by
 - #1

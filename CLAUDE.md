@@ -89,6 +89,8 @@ Fase 2 tests: `tests/fase2/test_issueNNN_<topic>.py`. `conftest.py` runs `alembi
 
 One file per issue (`test_issueNN_<topic>.py` / `test_issueNNN_<topic>.py`). Assert externally observable behaviour, not internal call shapes. Run focused during dev; full suite before closing an issue.
 
+After all tests for an issue pass, mark its acceptance criteria as done in `ISSUES_MVP.md` or `ISSUES_FASE2.md`: change `- [ ]` to `- [x]` for every criterion that has a passing test. Leave unchecked only criteria that require real external services (Deepgram, OpenAI) or manual sign-off (DPA, DPIA).
+
 ## Git safety policy
 
 Never without explicit confirmation: `branch -D`, `push --force`, `reset --hard`, `checkout -- <path>`, `clean -fd`, `stash drop`, destructive rebase on shared branch.
