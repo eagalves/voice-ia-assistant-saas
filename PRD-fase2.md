@@ -15,7 +15,7 @@
 
 O MVP entregou um assistente de voz desktop, single-user, com domínio (Anamnese, sinais de alerta, perfis clínicos, Ciclo de perguntas, atribuição de Participantes) validado em uso local. O produtor está construindo um **app de telemedicina** próprio, e quer integrar este assistente como **componente** dentro desse app — não como SaaS independente.
 
-O caminho atual não suporta esse uso por construção: captura é via microfone local (`sounddevice`), Sessão vive em RAM in-process, perfil é configurado por env no boot, não há API HTTP nem WebSocket, não há autenticação de chamadas vindas de outro sistema. Para virar componente integrável, o assistente precisa: aceitar conexão WebSocket de áudio do navegador (ou do servidor do app), expor API REST para criar/encerrar Sessão, autenticar via API key + JWT do app de telemedicina, gerar conteúdo estruturado (transcrição, draft de Prontuário, alertas) e devolver via API/WS.
+O caminho atual não suporta esse uso por construção: captura é via microfone local (`sounddevice`), Sessão vive em RAM in-process, perfil é configurado por env no boot, não há API HTTP nem WebSocket, não há autenticação de chamadas vindas de outro sistema. Para virar componente integrável, o assistente precisa: aceitar conexão WebSocket de áudio do navegador (ou do servidor do app), expor API REST para criar/encerrar Sessão, autenticar via API key + JWT do app de telemedicina, gerar conteúdo estruturado (transcrição, draft de Prontuário, alertas) e devolver via API/WS. **Na Fase 2, o objetivo clínico primário é acurácia e completude da transcrição para apoiar o prontuário; comunicação em tempo real estrito não é requisito obrigatório.**
 
 **Fronteira clara**: o assistente é **Operador LGPD**, não sistema de prontuário. Ele processa áudio sob instrução do app de telemedicina (Controlador) e devolve conteúdo estruturado. CFM 1.821 e CFM 2.314 (prontuário eletrônico, telemedicina) **não se aplicam ao assistente** — aplicam-se ao app. ICP-Brasil, KYC do Paciente, ConsentService público, DSRPortal e DPO público de telemedicina **ficam com o app**, não com o assistente.
 
@@ -53,7 +53,7 @@ Hardening: Multi-AZ, DR (RTO 1h, RPO 5min), runbooks, k6 semanal, AWS Secrets Ma
 
 1. Como dev do app, quero criar uma Sessão via `POST /v1/sessions` com `idempotency-key` e receber `{session_id, ws_url, ws_token}` para o navegador conectar. **`idempotency-key`**: TTL 24h, first-write-wins via `INSERT ... ON CONFLICT DO NOTHING`; POST duplicado com mesma chave retorna a sessão original. **Escopo canônico da chave**: a uniqueness constraint é sobre a tupla `(tenant_id, endpoint, actor_sub_jwt, idempotency_key)` — não apenas sobre o valor da chave; colisão entre operações distintas (mesma chave em `endpoints`/`actors` diferentes) é impossível por construção. Mismatch de payload sob mesma chave dentro do TTL retorna `409 IDEMPOTENCY_PAYLOAD_MISMATCH`.
 2. Como dev do app, quero o navegador se conectar ao WebSocket do assistente com `ws_token` e enviar áudio Opus 20 ms 16 kHz mono.
-3. Como dev do app, quero receber tokens de transcrição em streaming via WebSocket (`{"type":"token"}`) para mostrar legendas em tempo real.
+3. Como dev do app, quero receber atualizações de transcrição via WebSocket (`{"type":"token"}` em streaming quando habilitado, ou blocos finais), para mostrar o progresso da conversa sem exigir tempo real estrito.
 4. Como dev do app, quero receber alertas de red flag em tempo real (`{"type":"red_flag"}`) para destacar na UI.
 5. Como dev do app, quero buscar o draft de Prontuário gerado via `GET /v1/sessions/{id}/draft` para integrar no meu sistema de prontuário oficial.
 6. Como dev do app, quero encerrar uma Sessão via `POST /v1/sessions/{id}/close` para liberar recursos do componente.
@@ -62,7 +62,7 @@ Hardening: Multi-AZ, DR (RTO 1h, RPO 5min), runbooks, k6 semanal, AWS Secrets Ma
 
 ### Médico (usuário final, cliente do app de telemedicina)
 
-9. Como Médico, quero falar normalmente durante a Consulta e ver a transcrição surgir com TTFT < 1,5s no app, sem distração técnica.
+9. Como Médico, quero falar normalmente durante a Consulta e receber transcrição acurada em poucos segundos (sem exigência de tempo real estrito), para que o prontuário fique consistente.
 10. Como Médico, quero a transcrição diferenciar minhas falas das do Paciente (diarização por roteamento — duas streams WS separadas).
 11. Como Médico, quero o assistente conduzir Anamnese guiada quando Perfil for `medical`, cobrindo os 8 campos obrigatórios sem que eu esqueça.
 12. Como Médico, quero ser avisado em destaque quando um sinal de alerta (red flag) for detectado, para não passar batido em sintoma crítico.
@@ -114,7 +114,7 @@ Hardening: Multi-AZ, DR (RTO 1h, RPO 5min), runbooks, k6 semanal, AWS Secrets Ma
 
 ### Decisões fixadas
 
-- **STT primário**: Deepgram Nova-2 streaming pt-BR. Fallback batch: OpenAI Whisper API offline. **Timeout Deepgram**: 800ms por segmento de áudio (valor inicial fixo na 2.0 para reduzir variáveis no go-live; política adaptativa baseada em p95 recente + circuit breaker com histerese entra na 2.1 após coleta de telemetria); estouro aciona fallback Whisper API para aquele segmento (frame re-enfileirado). **Degradação de sessão ativa**: se Deepgram cair durante sessão Premium/Médio, componente degrada graciosamente para batch — sessão continua viva, emite `{"type":"status","stt_mode":"fallback_batch","slo":"ttft_suspended"}` via WS. **TTFT p95 < 1,5s está formalmente suspenso enquanto `stt_mode=fallback_batch`** — o app deve degradar UX (ex.: indicar "transcrição em modo recuperação"); SLO de emergência: draft disponível em até 5 min após encerramento (mesmo contrato do Plano Básico normal), aplicável também a sessões encerradas por drain ou falha. Retorno a streaming emite `{"type":"status","stt_mode":"streaming","slo":"ttft_active"}`. Fallback é transitório no Premium/Médio; no Básico é o modo permanente normal.
+- **STT primário**: Deepgram Nova-2 streaming pt-BR. Fallback batch: OpenAI Whisper API offline. **Princípio do perfil `medical` na 2.0**: completude primeiro (transcrição final por bloco), com parcial ao vivo opcional e desligada por padrão. **Timeout Deepgram**: 800ms por segmento de áudio (valor inicial fixo na 2.0 para reduzir variáveis no go-live; política adaptativa baseada em p95 recente + circuit breaker com histerese entra na 2.1 após coleta de telemetria); estouro aciona fallback Whisper API para aquele segmento (frame re-enfileirado). **Degradação de sessão ativa**: se Deepgram cair durante sessão Premium/Médio, componente degrada graciosamente para batch — sessão continua viva, emite `{"type":"status","stt_mode":"fallback_batch"}` via WS. SLO de emergência: draft disponível em até 5 min após encerramento (mesmo contrato do Plano Básico normal), aplicável também a sessões encerradas por drain ou falha. Retorno a streaming emite `{"type":"status","stt_mode":"streaming"}`. Fallback é transitório no Premium/Médio; no Básico é o modo permanente normal.
 - **LLM primário**: GPT-4o. Fallback técnico: Sonnet 4.5. Gemini removido.
 - **Codec WS**: Opus 20 ms, 16 kHz, mono.
 - **VAD**: client-side no browser, fallback server-side.
@@ -124,6 +124,8 @@ Hardening: Multi-AZ, DR (RTO 1h, RPO 5min), runbooks, k6 semanal, AWS Secrets Ma
 - **Redis**: Cluster com hash tag `{tenant_id}:{session_id}` (single-node físico aceito).
 - **Fila**: `asyncio.Queue` por processo para áudio em tempo real; Redis Streams para pipeline pós-Sessão. **Durabilidade de áudio**: frames de áudio são efêmeros por design — o componente não os persiste. A janela de 5s de reconexão é mantida no cliente (browser buffer); ao reconectar, o cliente reenvia esses frames. Se o container morrer com frames na queue ainda não processados, esses frames são considerados perdidos e o cliente os reenvia na reconexão. O Redis Stream registra eventos de transcrição (já processados pelo STT), não frames brutos de áudio.
 - **Migrations**: Alembic versionado + reversível; CI bloqueia migration sem `downgrade()`.
+- **Configuração de confiança STT via `.env` (sem compatibilidade legada)**: `STT_CONFIDENCE` é o limiar operacional único de aceitação (semântica equivalente ao antigo `STT_CONFIDENCE_MIN`), validado no intervalo `[0.30, 0.95]`. Valor ausente ou inválido gera warning e fallback para `0.55` sem interromper Sessão.
+- **Confiabilidade por campo no draft (feature flag via `.env`)**: `DRAFT_FIELD_CONFIDENCE_ENABLED` (0|1), `FIELD_CONFIDENCE_REVIEW_THRESHOLD=0.55` e `FIELD_CONFIDENCE_HIGH_THRESHOLD=0.80` controlam a classificação por campo (`revisar`, `médio`, `alto`) e a marcação explícita de incerteza para revisão médica.
 - **Prompt caching**: somente system prompt estático; **proibido cachear contexto de Sessão em `medical`**.
 - **Encryption-at-rest**: master key única no KMS gerenciado. TLS obrigatório em todas as conexões externas (incluindo Deepgram e OpenAI).
 - **Residência de dados (Deepgram)**: Deepgram processa em US por padrão. O DPA com Deepgram deve incluir cláusulas de adequação para transferência internacional de dados sensíveis (Art. 33 LGPD) — padrão contratual ou mecanismo equivalente reconhecido pela ANPD. Este é requisito bloqueador hard do DPA, não detalhe operacional.
@@ -182,7 +184,17 @@ Hardening: Multi-AZ, DR (RTO 1h, RPO 5min), runbooks, k6 semanal, AWS Secrets Ma
 
 ### SLOs por sub-fase
 
-- **2.0**: TTFT p95 < 1,5s **(Planos Médio e Premium apenas)**; Plano Básico: transcrição disponível em até 5 min após encerramento da Sessão; WS reconnect < 3s; auto-scale 10→100 sem ação humana; trilha de auditoria sem gaps em 100% das Sessões. **Gate de release da 2.0 (checklist completo — todos obrigatórios):** (1) smoke test de carga: 10 sessões WS simultâneas de 10 min com áudio sintético, TTFT e reconnect dentro do SLO; (2) AuditLog: hash chain sem gaps verificado em 100% das sessões do smoke test; (3) AuthService: JWT expirado/inválido retorna 401, `ws_token` inválido fecha WS com 4001; (4) TenantRepository: query sem `tenant_id` retorna vazio (teste de isolamento no CI); (5) EventStream: reconexão WS com handshake `session_resumed` + dedupe por `event_id` validado em teste de chaos (kill container durante sessão ativa).
+- **2.0**: prioridade em acurácia/completude da transcrição para prontuário (não há exigência de tempo real estrito). Plano Básico: transcrição disponível em até 5 min após encerramento da Sessão; Planos Médio/Premium: resposta em segundos por bloco de fala (meta inicial <= 15s por bloco), com reconexão WS < 3s e trilha de auditoria sem gaps em 100% das Sessões.
+- **Gate de release da 2.0 (Definition of Done — todos obrigatórios):**
+	(1) criar Sessão + conectar WS + transcrever ponta a ponta com perfil `medical`;
+	(2) reconexão com dedupe validada em teste mínimo (sem duplicação/perda de eventos finais);
+	(3) draft materializado em Postgres com `ready|pending|failed`;
+	(4) auth validada (`JWT` claims mínimas + `ws_token` + close/revogação imediata);
+	(5) fallback STT controlado (circuit breaker + status de degradação visível no app);
+	(6) `STT_CONFIDENCE` configurável por `.env` e respeitado no runtime;
+	(7) latência em segundos por bloco sem travar Sessão;
+	(8) cobertura dos campos obrigatórios do perfil `medical` >= 90% no draft de validação;
+	(9) observabilidade de qualidade ativa (taxa de correção manual e trechos marcados para revisão).
 - **2.1**: 99,5% uptime mensal; DR restore < 1h; DPA com providers ativo em 100% antes de produção real. **Qualidade operacional do draft LLM** (NFR semântica, complementa WER): (a) **taxa de correção manual** ≤ 30% por sessão `medical`, medida pela razão `chars_editados_pelo_medico / chars_draft_original` quando o app de telemedicina salva o prontuário e reporta o delta via `POST /v1/sessions/{id}/draft/feedback`; (b) **taxa de contradição factual** ≤ 2%, medida por validador automático que compara afirmações do draft contra a transcrição. Revisão mensal pelo Med Lead. > 50% de correção manual em 2 sessões consecutivas de um mesmo Médico, ou > 10% de contradição factual agregada na semana, aciona kill switch da geração de draft (transcrição segue ativa) até root-cause.
 
 ---
@@ -210,7 +222,7 @@ Princípio: **um bom teste valida comportamento externo observável, não detalh
 
 - WER ≤ 10% em 50 frases fixas — bateria refeita com Deepgram Nova-2 antes de fechar 2.0.
 - Bateria de RED_FLAG em Voice CLI (Whisper) **e** Web (Deepgram) — falha bloqueia go-live.
-- E2E p95 < 4s preservado; TTFT p95 < 1,5s adicionado.
+- E2E p95 < 4s preservado; latência por bloco no perfil `medical` <= 15s como meta inicial de operação.
 
 ### Prior art
 
