@@ -388,6 +388,9 @@ async def test_gap_sad1_abrupt_disconnect_unregisters_from_drain(
     from starlette.testclient import TestClient as SyncTestClient
 
     from assistente_voz.server.db.models import Session as SessionModel
+    from assistente_voz.server.event_stream import FakeEventStream
+    from assistente_voz.server.redis_keys import ws_token_key
+    from assistente_voz.server.stream_client import override_stream_client, reset_stream_client
 
     session_id = uuid.uuid4()
     ws_token_val = str(uuid.uuid4())
@@ -410,19 +413,30 @@ async def test_gap_sad1_abrupt_disconnect_unregisters_from_drain(
         )
         await db.commit()
 
-    with SyncTestClient(app) as tc:
-        dm = get_drain_manager()
+    # Pre-populate Redis mock so ws_token validation passes (Issue #6).
+    fake_stream = FakeEventStream()
+    import json as _json
+    await fake_stream.set(
+        ws_token_key(DEFAULT_TENANT_ID, ws_token_val),
+        _json.dumps({"session_id": str(session_id), "tenant_id": DEFAULT_TENANT_ID}),
+    )
+    override_stream_client(fake_stream)
+    try:
+        with SyncTestClient(app) as tc:
+            dm = get_drain_manager()
 
-        with tc.websocket_connect(
-            f"/v1/sessions/{session_id}/audio"
-            f"?ws_token={ws_token_val}&speaker=doctor",
-            headers={"X-Tenant-Id": DEFAULT_TENANT_ID},
-        ):
-            # Connection is open; at least one conn_id is registered
-            assert len(dm._connections) >= 1
+            with tc.websocket_connect(
+                f"/v1/sessions/{session_id}/audio"
+                f"?ws_token={ws_token_val}&speaker=doctor",
+                headers={"X-Tenant-Id": DEFAULT_TENANT_ID},
+            ):
+                # Connection is open; at least one conn_id is registered
+                assert len(dm._connections) >= 1
 
-        # After context exit the WS is closed; router's finally block unregistered it
-        assert len(dm._connections) == 0
+            # After context exit the WS is closed; router's finally block unregistered it
+            assert len(dm._connections) == 0
+    finally:
+        reset_stream_client()
 
 
 # ── GAP-WS1: overflow via TestClient ─────────────────────────────────────────

@@ -517,25 +517,25 @@ o WS ativo em < 2s end-to-end sem esperar próximo frame.
 - ws_token inválido por revogação ativa → fechar WS com `4002`
 
 ### Acceptance criteria
-- [ ] JWT com RS256 válido, claims obrigatórios presentes → request aceito
-- [ ] JWT com HS256 → `401 AUTH_ALGORITHM_NOT_ALLOWED`
-- [ ] JWT sem `jti` → `401` (claim obrigatório ausente)
-- [ ] `iss` não na allowlist → `401`
-- [ ] `exp − iat > 900s` → `401 AUTH_JWT_WINDOW_EXCEEDED`
-- [ ] Clock skew de 59s (exp no futuro por 59s) → aceito; 61s além do skew → rejeitado
-- [ ] `jti` reutilizado dentro de 15min → `401` (anti-replay)
-- [ ] `kid` desconhecido → JWKS refreshed imediatamente; JWT validado com nova chave
-- [ ] JWKS indisponível por > 60min → endpoint retorna `503 AUTH_JWKS_UNAVAILABLE`
-- [ ] ws_token UUID v4 gerado e armazenado no Redis com TTL correto por plano
-- [ ] WS estabelecido com ws_token válido → conexão aceita
-- [ ] WS com ws_token expirado → close `4001`
-- [ ] `POST /close` → ws_token apagado do Redis + pub/sub `revoke:{token}` publicado
-- [ ] WS fechado com `4002` em < 2s após `POST /close` (medido com mock Redis pub/sub)
-- [ ] `POST /token/refresh` invalida token antigo atomicamente e não fecha WS ativo
-- [ ] `{"type":"token_expiring_in":300}` emitido via WS com 5min de antecedência
+- [x] JWT com RS256 válido, claims obrigatórios presentes → request aceito
+- [x] JWT com HS256 → `401 AUTH_ALGORITHM_NOT_ALLOWED`
+- [x] JWT sem `jti` → `401` (claim obrigatório ausente)
+- [x] `iss` não na allowlist → `401`
+- [x] `exp − iat > 900s` → `401 AUTH_JWT_WINDOW_EXCEEDED`
+- [x] Clock skew de 59s (exp no futuro por 59s) → aceito; 61s além do skew → rejeitado
+- [x] `jti` reutilizado dentro de 15min → `401` (anti-replay)
+- [x] `kid` desconhecido → JWKS refreshed imediatamente; JWT validado com nova chave
+- [x] JWKS indisponível por > 60min → endpoint retorna `503 AUTH_JWKS_UNAVAILABLE`
+- [x] ws_token UUID v4 gerado e armazenado no Redis com TTL correto por plano
+- [x] WS estabelecido com ws_token válido → conexão aceita
+- [x] WS com ws_token expirado → close `4001`
+- [x] `POST /close` → ws_token apagado do Redis + pub/sub `revoke:{token}` publicado
+- [x] WS fechado com `4002` em < 2s após `POST /close` (medido com mock Redis pub/sub)
+- [x] `POST /token/refresh` invalida token antigo atomicamente e não fecha WS ativo
+- [x] `{"type":"token_expiring_in":300}` emitido via WS com 5min de antecedência
 
 ### Gap tests (Issue #3 — implementar junto com esta issue)
-- [ ] GAP-SAD2 — banco cai durante validação de `ws_token` (mock de `AsyncSession` lançando exceção): WS fecha com código 4001 ou 1011, sem stack trace exposto ao cliente
+- [x] GAP-SAD2 — banco cai durante validação de `ws_token` (mock de `AsyncSession` lançando exceção): WS fecha com código 4001 ou 1011, sem stack trace exposto ao cliente
 
 ### Blocked by
 - #1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated
@@ -13,13 +14,14 @@ from ..config import ServerSettings
 from ..context import SessionContext
 from ..deps import check_not_draining, get_app_settings, get_db_session, get_tenant_id
 from ..domain.plans import features_for
+from ..materialization import MaterializationWorker
+from ..redis_keys import ws_revocations_channel, ws_token_key
 from ..repositories.drafts_repo import DraftsRepository
 from ..repositories.idempotency_repo import (
     ENDPOINT_CREATE_SESSION,
     IdempotencyRepository,
     canonical_hash,
 )
-from ..materialization import MaterializationWorker
 from ..repositories.sessions_repo import SessionsRepository
 from ..schemas.sessions import (
     CloseSessionOut,
@@ -27,6 +29,7 @@ from ..schemas.sessions import (
     CreateSessionOut,
     TokenRefreshOut,
 )
+from ..stream_client import get_stream_client
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
@@ -76,8 +79,8 @@ async def create_session(
 ) -> Response | CreateSessionOut:
     key = _idempotency_key_or_400(idempotency_key)
 
-    # Issue #6 will parse the JWT sub claim; for now use the raw bearer token.
-    actor_sub = request.state.bearer_token
+    # Use JWT sub claim (set by middleware); falls back to raw bearer in bypass mode.
+    actor_sub = getattr(request.state, "actor_sub", request.state.bearer_token)
 
     body_dict = payload.model_dump()
     p_hash = canonical_hash(body_dict)
@@ -146,6 +149,18 @@ async def create_session(
         response_status=status.HTTP_201_CREATED,
     )
 
+    # Store ws_token in Redis with TTL = session_max_minutes.
+    token_ttl_s = plan_features["session_max_minutes"] * 60
+    stream = get_stream_client()
+    token_data = json.dumps(
+        {
+            "session_id": str(session.id),
+            "tenant_id": tenant_id,
+            "plan": payload.plan,
+        }
+    )
+    await stream.set(ws_token_key(tenant_id, str(ws_token)), token_data, ex=token_ttl_s)
+
     return out
 
 
@@ -175,6 +190,14 @@ async def close_session(
         )
 
     await sessions.mark_closed(session)
+
+    # Revoke ws_token in Redis + publish revocation event.
+    old_ws_token = session.ws_token
+    stream = get_stream_client()
+    await stream.delete(ws_token_key(tenant_id, old_ws_token))
+    await stream.publish(
+        ws_revocations_channel(tenant_id), f"revoke:{old_ws_token}"
+    )
 
     existing = await drafts.get_by_session(session_id)
     if existing is None:
@@ -228,7 +251,17 @@ async def refresh_ws_token(
         )
 
     new_token = uuid.uuid4()
+    old_token = session.ws_token
     await sessions.rotate_ws_token(session, new_token)
+
+    # Atomically swap ws_token in Redis: DEL old, SET new.
+    stream = get_stream_client()
+    await stream.delete(ws_token_key(tenant_id, old_token))
+    token_ttl_s = session.plan_features.get("session_max_minutes", 60) * 60
+    token_data = json.dumps(
+        {"session_id": str(session.id), "tenant_id": tenant_id, "plan": session.plan}
+    )
+    await stream.set(ws_token_key(tenant_id, str(new_token)), token_data, ex=token_ttl_s)
 
     request.state.session_context = _build_session_context(
         tenant_id=tenant_id,

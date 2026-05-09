@@ -28,18 +28,27 @@ def get_app_settings() -> ServerSettings:
 
 
 def get_bearer_token(request: Request) -> str:
-    """Returns the bearer token captured by the middleware.
-
-    The middleware already returned 401 if absent, so this is safe to call
-    from inside a /v1 handler.
-    """
+    """Returns the bearer token captured by the middleware."""
     return getattr(request.state, "bearer_token", "")
 
 
-def get_tenant_id(settings: ServerSettings = Depends(get_app_settings)) -> str:
-    """Issue #1: tenant_id is the default UUID. Issue #6 will derive it from
-    the JWT (`tid` claim or similar) and Fase 3 will resolve it per-host."""
-    return settings.default_tenant_id
+def get_actor_sub(request: Request) -> str:
+    """Returns the JWT ``sub`` claim (or raw Bearer token in bypass mode)."""
+    return getattr(request.state, "actor_sub", "")
+
+
+def get_tenant_id(
+    request: Request,
+    settings: ServerSettings = Depends(get_app_settings),
+) -> str:
+    """Derive tenant_id from JWT ``tid`` claim when present; fall back to default.
+
+    In bypass mode (no JWT_JWKS_URL) ``jwt_payload`` is an empty dict so the
+    default tenant UUID is used, keeping all pre-Issue-#6 tests green.
+    """
+    payload: dict = getattr(request.state, "jwt_payload", {})
+    tid = payload.get("tid", "")
+    return str(tid) if tid else settings.default_tenant_id
 
 
 def check_not_draining() -> None:

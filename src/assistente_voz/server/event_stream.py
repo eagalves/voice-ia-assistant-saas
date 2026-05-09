@@ -66,6 +66,14 @@ class EventStreamClient(Protocol):
         """Set TTL on an existing key."""
         ...
 
+    async def delete(self, key: str) -> None:
+        """Delete a key (string or stream)."""
+        ...
+
+    async def publish(self, channel: str, message: str) -> None:
+        """Publish a message to a pub/sub channel."""
+        ...
+
 
 class FakeEventStream:
     """In-memory EventStream for unit tests.
@@ -83,6 +91,7 @@ class FakeEventStream:
         self._kv: dict[str, str] = {}
         self._ttls: dict[str, int] = {}
         self._seq: int = 0
+        self._published: dict[str, list[str]] = {}  # channel → list[message]
 
     # ----------------------------------------------------------------
     # ID helpers — numeric (ms, seq) comparison
@@ -169,6 +178,16 @@ class FakeEventStream:
     async def expire(self, key: str, seconds: int) -> None:
         self._ttls[key] = seconds
 
+    async def delete(self, key: str) -> None:
+        """Delete a string key or stream key."""
+        self._kv.pop(key, None)
+        self._streams.pop(key, None)
+        self._ttls.pop(key, None)
+
+    async def publish(self, channel: str, message: str) -> None:
+        """Append message to the in-memory pub/sub log."""
+        self._published.setdefault(channel, []).append(message)
+
     # ----------------------------------------------------------------
     # Test helpers
     # ----------------------------------------------------------------
@@ -180,3 +199,7 @@ class FakeEventStream:
     def stream_entries(self, key: str) -> list[tuple[str, dict[str, str]]]:
         """Return a copy of all stream entries for a key."""
         return list(self._streams.get(key, []))
+
+    def published_messages(self, channel: str) -> list[str]:
+        """Return all messages published to *channel* (for test assertions)."""
+        return list(self._published.get(channel, []))

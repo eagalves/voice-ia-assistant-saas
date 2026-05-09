@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
@@ -28,6 +28,25 @@ class ServerSettings(BaseSettings):
         default=DEFAULT_TENANT_ID,
         validation_alias="DEFAULT_TENANT_ID",
     )
+
+    # ── JWT / Auth settings (Issue #6) ────────────────────────────────────
+    # Empty string means "bypass mode" (no JWKS fetching) — used in tests.
+    jwt_jwks_url: str = Field(
+        default="",
+        validation_alias="JWT_JWKS_URL",
+    )
+    # Comma-separated list of allowed issuers. Empty = bypass (tests).
+    jwt_iss_allowlist_raw: str = Field(
+        default="",
+        validation_alias="JWT_ISS_ALLOWLIST",
+    )
+
+    @property
+    def jwt_iss_allowlist(self) -> list[str]:
+        """Parsed issuer allowlist. Empty list = bypass mode."""
+        if not self.jwt_iss_allowlist_raw.strip():
+            return []
+        return [s.strip() for s in self.jwt_iss_allowlist_raw.split(",") if s.strip()]
 
 
 def get_settings() -> ServerSettings:
