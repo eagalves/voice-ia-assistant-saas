@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...errors import ApiError
 from ..config import ServerSettings
 from ..context import SessionContext
-from ..deps import get_app_settings, get_db_session, get_tenant_id
+from ..deps import check_not_draining, get_app_settings, get_db_session, get_tenant_id
 from ..domain.plans import features_for
 from ..repositories.drafts_repo import DraftsRepository
 from ..repositories.idempotency_repo import (
@@ -71,6 +71,7 @@ async def create_session(
     settings: Annotated[ServerSettings, Depends(get_app_settings)],
     tenant_id: Annotated[str, Depends(get_tenant_id)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    _drain: None = Depends(check_not_draining),
 ) -> Response | CreateSessionOut:
     key = _idempotency_key_or_400(idempotency_key)
 

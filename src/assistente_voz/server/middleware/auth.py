@@ -19,6 +19,11 @@ class BearerPresenceMiddleware(BaseHTTPMiddleware):
         if not request.url.path.startswith(PROTECTED_PREFIX):
             return await call_next(request)
 
+        # WebSocket upgrades authenticate via ws_token query parameter;
+        # Bearer header is not available during the HTTP→WS handshake.
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return await call_next(request)
+
         auth_header = request.headers.get("authorization", "")
         if not auth_header.lower().startswith("bearer "):
             response = JSONResponse(
