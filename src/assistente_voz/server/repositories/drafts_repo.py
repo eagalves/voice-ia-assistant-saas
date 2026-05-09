@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from ..db.models import Draft
 from .base import TenantRepository
@@ -56,3 +56,35 @@ class DraftsRepository(TenantRepository):
         draft.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
         return draft
+
+    async def materialize_with_lock(
+        self,
+        session_id: uuid.UUID,
+        content: dict[str, Any],
+    ) -> bool:
+        """Acquire advisory lock and transition draft pending → ready (exactly-once).
+
+        Uses ``pg_advisory_xact_lock`` so that concurrent materialization
+        workers (close + auto-finalize, retry race) queue on the lock and the
+        second one exits silently when it sees the draft is already ``ready``.
+
+        Returns:
+            True   — draft transitioned to ``ready``.
+            False  — draft was not in ``pending`` state; exited silently.
+        """
+        lock_key = f"materialize:{self.tenant_id}:{session_id}"
+        await self.db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": lock_key},
+        )
+
+        draft = await self.get_by_session(session_id)
+        if draft is None or draft.draft_status != "pending":
+            return False
+
+        draft.draft_status = "ready"
+        draft.content = content
+        draft.partial = False
+        draft.updated_at = datetime.now(timezone.utc)
+        await self.db.flush()
+        return True

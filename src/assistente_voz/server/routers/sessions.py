@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Path, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Path, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from ..repositories.idempotency_repo import (
     IdempotencyRepository,
     canonical_hash,
 )
+from ..materialization import MaterializationWorker
 from ..repositories.sessions_repo import SessionsRepository
 from ..schemas.sessions import (
     CloseSessionOut,
@@ -151,6 +152,7 @@ async def create_session(
 @router.post("/{session_id}/close", response_model=CloseSessionOut)
 async def close_session(
     request: Request,
+    background_tasks: BackgroundTasks,
     session_id: Annotated[uuid.UUID, Path()],
     db: Annotated[AsyncSession, Depends(get_db_session)],
     tenant_id: Annotated[str, Depends(get_tenant_id)],
@@ -178,7 +180,13 @@ async def close_session(
     if existing is None:
         await drafts.insert_pending(session_id)
     # If a draft already exists (defensive), leave it untouched —
-    # Issue #5's worker is the source of truth for transitions.
+    # The worker is the source of truth for transitions.
+
+    worker = MaterializationWorker(
+        tenant_id=tenant_id,
+        session_id=str(session_id),
+    )
+    background_tasks.add_task(worker.run)
 
     request.state.session_context = _build_session_context(
         tenant_id=tenant_id,

@@ -433,23 +433,23 @@ Armazenado em `draft_feedback` para telemetria de qualidade clínica (Issue #9).
 **Stream Redis:** expira 24h após close (`EXPIRE session:{tid}:{sid}:events 86400`).
 
 ### Acceptance criteria
-- [ ] `POST /v1/sessions/{id}/close` → `drafts` com `draft_status=pending` inserido
-- [ ] Worker de materialização transita `pending → ready` com `content` preenchido
-- [ ] Lock advisory garante exactly-once: close + auto-finalize simultâneos resultam em exatamente
+- [x] `POST /v1/sessions/{id}/close` → `drafts` com `draft_status=pending` inserido
+- [x] Worker de materialização transita `pending → ready` com `content` preenchido
+- [x] Lock advisory garante exactly-once: close + auto-finalize simultâneos resultam em exatamente
   um `ready` (teste de concorrência com 2 threads)
-- [ ] Retry simultâneo de materialização: segundo worker sai silenciosamente sem `DUPLICATE_KEY`
-- [ ] 3 falhas de materialização → `draft_status=failed`, alerta (log nível ERROR)
-- [ ] `GET /draft` retorna `202` com `retry-after: 5` quando `pending`
-- [ ] `GET /draft` retorna `500` com `partial:true` quando `failed`
-- [ ] `POST /draft/feedback` armazena `chars_original`, `chars_edited`, `fields_corrected`
-- [ ] Snapshot `medical` atualizado a cada 25 eventos (validado com mock de 30 eventos)
-- [ ] Bateria de crash em N=25 eventos para `medical`: draft resultante perde ≤ 5% de campos
+- [x] Retry simultâneo de materialização: segundo worker sai silenciosamente sem `DUPLICATE_KEY`
+- [x] 3 falhas de materialização → `draft_status=failed`, alerta (log nível ERROR)
+- [x] `GET /draft` retorna `202` com `retry-after: 5` quando `pending`
+- [x] `GET /draft` retorna `500` com `partial:true` quando `failed`
+- [x] `POST /draft/feedback` armazena `chars_original`, `chars_edited`, `fields_corrected`
+- [x] Snapshot `medical` atualizado a cada 25 eventos (validado com mock de 30 eventos)
+- [x] Bateria de crash em N=25 eventos para `medical`: draft resultante perde ≤ 5% de campos
   obrigatórios da Anamnese
-- [ ] Redis Stream com `EXPIRE 86400` após `close` (validado com mock Redis TTL check)
-- [ ] Migration Alembic com `downgrade()` obrigatório
+- [x] Redis Stream com `EXPIRE 86400` após `close` (validado com mock Redis TTL check)
+- [x] Migration Alembic com `downgrade()` obrigatório
 
 ### Gap tests (Issue #3 — implementar junto com esta issue)
-- [ ] GAP-CONC1 — dois `AudioGateway` para a mesma sessão processando frames simultaneamente (2 threads asyncio): stream Redis não corrompido, nenhum `event_id` duplicado
+- [x] GAP-CONC1 — dois `AudioGateway` para a mesma sessão processando frames simultaneamente (2 threads asyncio): stream Redis não corrompido, nenhum `event_id` duplicado
 
 ### Blocked by
 - #3

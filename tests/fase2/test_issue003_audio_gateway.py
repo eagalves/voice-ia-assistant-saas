@@ -411,9 +411,13 @@ def test_ac12_no_new_migration_for_issue_003(repo_root):
     migrations_dir = repo_root / "migrations" / "versions"
     migration_files = sorted(migrations_dir.glob("*.py"))
     names = [f.name for f in migration_files]
-    # Highest migration should still be 0003_idempotency_keys (from Issue #2)
-    issue3_migration = any("0004" in n for n in names)
+    # Issue #3 must not introduce any migration related to audio/WS/gateway.
+    # (Migration 0004 exists but belongs to Issue #5 — draft_status_index.)
+    issue3_migration = any(
+        any(kw in n for kw in ("audio", "gateway", "ws_", "websocket"))
+        for n in names
+    )
     assert not issue3_migration, (
-        "Issue #3 must not introduce DDL (no 0004_* migration expected). "
+        "Issue #3 must not introduce DDL (no audio/gateway migration expected). "
         f"Found migrations: {names}"
     )
