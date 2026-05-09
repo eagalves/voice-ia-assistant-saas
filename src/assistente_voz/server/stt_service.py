@@ -56,6 +56,55 @@ CB_HEALTH_THRESHOLD: int = 5         # consecutive OK probes to close circuit br
 CB_MIN_OPEN_DURATION_S: float = 60.0  # minimum seconds in open state before recovery
 
 
+# ── CircuitBreakerConfig ──────────────────────────────────────────────────────
+
+@dataclass
+class CircuitBreakerConfig:
+    """Runtime configuration for the STT circuit breaker.
+
+    All values can be overridden via environment variables so that SREs can
+    tune thresholds without a code deploy.
+    """
+
+    failure_threshold: int = 3               # N consecutive failures to open
+    fallback_min_window_s: int = 60          # min seconds in fallback before probing
+    health_check_success_required: int = 5   # consecutive OK probes to close
+    probe_interval_s: int = 10               # seconds between health probes
+    timeout_per_segment_ms: int = 800        # Deepgram per-chunk timeout
+
+    @classmethod
+    def from_env(cls) -> "CircuitBreakerConfig":
+        """Load config from env vars; invalid values fall back to defaults."""
+
+        def _int(name: str, default: int) -> int:
+            raw = os.getenv(name)
+            if raw is None:
+                return default
+            try:
+                return int(raw)
+            except ValueError:
+                _logger.warning(
+                    "CircuitBreakerConfig: %s=%r is not a valid int; using default %d",
+                    name,
+                    raw,
+                    default,
+                )
+                return default
+
+        return cls(
+            failure_threshold=_int("CB_FAILURE_THRESHOLD", 3),
+            fallback_min_window_s=_int("CB_FALLBACK_MIN_WINDOW_S", 60),
+            health_check_success_required=_int("CB_HEALTH_CHECK_SUCCESS_REQUIRED", 5),
+            probe_interval_s=_int("CB_PROBE_INTERVAL_S", 10),
+            timeout_per_segment_ms=_int("CB_TIMEOUT_PER_SEGMENT_MS", 800),
+        )
+
+    @property
+    def timeout_s(self) -> float:
+        """Deepgram per-segment timeout in seconds."""
+        return self.timeout_per_segment_ms / 1000.0
+
+
 # ── Confidence threshold helper ───────────────────────────────────────────────
 
 def get_confidence_threshold(raw_value: str | None = None) -> float:
@@ -175,10 +224,18 @@ class STTCircuitBreaker:
     """Tracks consecutive Deepgram failures and manages open/closed transitions.
 
     *clock* is injectable for tests so time can be advanced without sleeping.
+    *config* overrides the module-level constants; defaults to
+    ``CircuitBreakerConfig()`` when not supplied.
     """
 
-    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        config: CircuitBreakerConfig | None = None,
+    ) -> None:
         self._clock = clock
+        self._config = config or CircuitBreakerConfig()
         self._state = _CBState.CLOSED
         self._consecutive_failures: int = 0
         self._consecutive_health_ok: int = 0
@@ -190,13 +247,16 @@ class STTCircuitBreaker:
 
     def record_failure(self) -> bool:
         """Record one Deepgram failure.  Returns True if CB just opened."""
+        from .metrics import stt_circuit_state_gauge  # lazy to avoid circular
+
         self._consecutive_health_ok = 0
         if self._state == _CBState.CLOSED:
             self._consecutive_failures += 1
-            if self._consecutive_failures >= CB_FAILURE_THRESHOLD:
+            if self._consecutive_failures >= self._config.failure_threshold:
                 self._state = _CBState.OPEN
                 self._opened_at = self._clock()
                 self._consecutive_failures = 0
+                stt_circuit_state_gauge.set(1.0)
                 return True
         return False
 
@@ -209,15 +269,18 @@ class STTCircuitBreaker:
 
         Only considers closing if the minimum open duration has elapsed.
         """
+        from .metrics import stt_circuit_state_gauge  # lazy to avoid circular
+
         if not self.is_open or self._opened_at is None:
             return False
-        if self._clock() - self._opened_at < CB_MIN_OPEN_DURATION_S:
+        if self._clock() - self._opened_at < self._config.fallback_min_window_s:
             return False
         self._consecutive_health_ok += 1
-        if self._consecutive_health_ok >= CB_HEALTH_THRESHOLD:
+        if self._consecutive_health_ok >= self._config.health_check_success_required:
             self._state = _CBState.CLOSED
             self._opened_at = None
             self._consecutive_health_ok = 0
+            stt_circuit_state_gauge.set(0.0)
             return True
         return False
 
@@ -317,7 +380,9 @@ class STTStreamService:
         except Exception:
             just_opened = self._cb.record_failure()
             if just_opened and self._on_ws_status is not None:
-                self._on_ws_status({"type": "status", "stt_mode": "fallback_batch"})
+                self._on_ws_status(
+                    {"type": "status", "stt_mode": "fallback_batch", "reason": "circuit_open"}
+                )
             await self._run_batch(audio_bytes, speaker, on_final)
 
     async def _run_batch(
@@ -343,7 +408,9 @@ class STTStreamService:
         if ok:
             just_closed = self._cb.record_health_ok()
             if just_closed and self._on_ws_status is not None:
-                self._on_ws_status({"type": "status", "stt_mode": "streaming"})
+                self._on_ws_status(
+                    {"type": "status", "stt_mode": "streaming", "reason": "circuit_closed"}
+                )
         else:
             self._cb.record_health_fail()
 

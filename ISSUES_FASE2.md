@@ -595,18 +595,18 @@ stt_segment_duration_ms (histogram)
 — troca por mock em testes sem alterar lógica do circuit breaker.
 
 ### Acceptance criteria
-- [ ] 3 timeouts Deepgram consecutivos (mock 801ms) → circuit abre; evento WS
+- [x] 3 timeouts Deepgram consecutivos (mock 801ms) → circuit abre; evento WS
   `stt_mode:fallback_batch` emitido em < 1s
-- [ ] Circuit aberto → Whisper API batch processa segmentos sem erro
-- [ ] Circuit aberto há < 60s → probe não iniciada (clock mockado no teste)
-- [ ] Após 60s: 4 probes OK → circuit permanece open; 5ª probe OK → circuit fecha; evento WS
+- [x] Circuit aberto → Whisper API batch processa segmentos sem erro
+- [x] Circuit aberto há < 60s → probe não iniciada (clock mockado no teste)
+- [x] Após 60s: 4 probes OK → circuit permanece open; 5ª probe OK → circuit fecha; evento WS
   `stt_mode:streaming` emitido
-- [ ] Falha em qualquer uma das 5 probes → contagem reinicia; 5s probes OK subsequentes
+- [x] Falha em qualquer uma das 5 probes → contagem reinicia; 5s probes OK subsequentes
   necessários
-- [ ] Sessão permanece ativa (sem close/WS drop) durante toda a transição de fallback
-- [ ] `stt_circuit_state` exportado como métrica Prometheus (validado com mock Prometheus
+- [x] Sessão permanece ativa (sem close/WS drop) durante toda a transição de fallback
+- [x] `stt_circuit_state` exportado como métrica Prometheus (validado com mock Prometheus
   registry)
-- [ ] `CircuitBreakerConfig` carregado de env vars com defaults corretos
+- [x] `CircuitBreakerConfig` carregado de env vars com defaults corretos
 
 ### Blocked by
 - #4
