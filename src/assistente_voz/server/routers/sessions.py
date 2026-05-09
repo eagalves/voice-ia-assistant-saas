@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Path, Request, status
+from fastapi import APIRouter, Depends, Header, Path, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...errors import ApiError
@@ -13,6 +14,11 @@ from ..context import SessionContext
 from ..deps import get_app_settings, get_db_session, get_tenant_id
 from ..domain.plans import features_for
 from ..repositories.drafts_repo import DraftsRepository
+from ..repositories.idempotency_repo import (
+    ENDPOINT_CREATE_SESSION,
+    IdempotencyRepository,
+    canonical_hash,
+)
 from ..repositories.sessions_repo import SessionsRepository
 from ..schemas.sessions import (
     CloseSessionOut,
@@ -25,9 +31,6 @@ router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
 
 def _idempotency_key_or_400(idempotency_key: str | None) -> str:
-    # Issue #1: just persist the value for traceability. Issue #2 enforces
-    # full dedupe semantics. We still require the header to lock in the
-    # client contract early.
     if not idempotency_key or not idempotency_key.strip():
         raise ApiError(
             code="IDEMPOTENCY_KEY_MISSING",
@@ -68,8 +71,35 @@ async def create_session(
     settings: Annotated[ServerSettings, Depends(get_app_settings)],
     tenant_id: Annotated[str, Depends(get_tenant_id)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
-) -> CreateSessionOut:
+) -> Response | CreateSessionOut:
     key = _idempotency_key_or_400(idempotency_key)
+
+    # Issue #6 will parse the JWT sub claim; for now use the raw bearer token.
+    actor_sub = request.state.bearer_token
+
+    body_dict = payload.model_dump()
+    p_hash = canonical_hash(body_dict)
+
+    idempotency_repo = IdempotencyRepository(db, tenant_id)
+
+    existing = await idempotency_repo.get_valid(ENDPOINT_CREATE_SESSION, actor_sub, key)
+    if existing is not None:
+        if existing.payload_hash == p_hash:
+            # Replay: return the cached response with replay header.
+            return JSONResponse(
+                status_code=existing.response_status,
+                content=existing.response_body,
+                headers={"Idempotency-Replayed": "true"},
+            )
+        raise ApiError(
+            code="IDEMPOTENCY_PAYLOAD_MISMATCH",
+            message=(
+                "Idempotency-Key already used with a different request payload. "
+                "Use a new Idempotency-Key for a different request."
+            ),
+            status_code=409,
+        )
+
     plan_features = features_for(payload.plan)
 
     repo = SessionsRepository(db, tenant_id)
@@ -94,7 +124,7 @@ async def create_session(
     )
 
     ws_url = f"{settings.public_ws_base.rstrip('/')}/v1/sessions/{session.id}/audio"
-    return CreateSessionOut(
+    out = CreateSessionOut(
         session_id=session.id,
         ws_url=ws_url,
         ws_token=ws_token,
@@ -102,6 +132,19 @@ async def create_session(
         plan_features=plan_features,
         auto_finalize_at=session.auto_finalize_at,
     )
+
+    # Serialise and store idempotency record.
+    response_body = out.model_dump(mode="json")
+    await idempotency_repo.store(
+        endpoint=ENDPOINT_CREATE_SESSION,
+        actor_sub_jwt=actor_sub,
+        idempotency_key=key,
+        payload_hash=p_hash,
+        response_body=response_body,
+        response_status=status.HTTP_201_CREATED,
+    )
+
+    return out
 
 
 @router.post("/{session_id}/close", response_model=CloseSessionOut)

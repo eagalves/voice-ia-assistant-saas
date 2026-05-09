@@ -131,3 +131,40 @@ class DraftFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class IdempotencyKey(Base):
+    """Idempotency record for Issue #2.
+
+    Uniqueness scope: (tenant_id, endpoint, actor_sub_jwt, idempotency_key).
+    TTL enforced via expires_at; expired rows are purged by the repository
+    before inserting a fresh record (so the UNIQUE constraint doesn't block
+    logically-new requests).
+    """
+
+    __tablename__ = "idempotency_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_sub_jwt: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    response_body: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    response_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "endpoint",
+            "actor_sub_jwt",
+            "idempotency_key",
+            name="uq_idempotency_keys_scope",
+        ),
+    )
