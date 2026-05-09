@@ -352,6 +352,12 @@ afetada.
 - [ ] WER ≤ 10% na bateria de 50 frases clínicas (teste de aceitação pré-go-live)
 - [ ] `STTService.transcribe(...)` legacy não quebra (testes existentes do MVP passam)
 
+### Gap tests (Issue #3 — implementar junto com esta issue)
+- [ ] GAP-TTL1 — `FakeEventStream.expire()` registra TTL correto: após `close`, stream key tem TTL = `STREAM_TTL_SECONDS` (86400s)
+- [ ] GAP-SAD1 — cliente WS desconecta abruptamente durante `process_frame`: nenhuma exceção não tratada propaga; `unregister_drain_callback()` é chamado
+- [ ] GAP-WS1 — fluxo completo via `starlette.testclient` WebSocket: connect → enviar frame → receber `{"type":"status","reason":"STT_OVERFLOW"}` ao estourar fila (sem browser)
+- [ ] GAP-WS2 — reconexão testada pelo router: client envia `{"type":"reconnect"}` via TestClient WS e recebe handshake `{"type":"session_resumed","last_seq":N}`
+
 ### Blocked by
 - #3
 
@@ -442,6 +448,9 @@ Armazenado em `draft_feedback` para telemetria de qualidade clínica (Issue #9).
 - [ ] Redis Stream com `EXPIRE 86400` após `close` (validado com mock Redis TTL check)
 - [ ] Migration Alembic com `downgrade()` obrigatório
 
+### Gap tests (Issue #3 — implementar junto com esta issue)
+- [ ] GAP-CONC1 — dois `AudioGateway` para a mesma sessão processando frames simultaneamente (2 threads asyncio): stream Redis não corrompido, nenhum `event_id` duplicado
+
 ### Blocked by
 - #3
 - #4
@@ -524,6 +533,9 @@ o WS ativo em < 2s end-to-end sem esperar próximo frame.
 - [ ] WS fechado com `4002` em < 2s após `POST /close` (medido com mock Redis pub/sub)
 - [ ] `POST /token/refresh` invalida token antigo atomicamente e não fecha WS ativo
 - [ ] `{"type":"token_expiring_in":300}` emitido via WS com 5min de antecedência
+
+### Gap tests (Issue #3 — implementar junto com esta issue)
+- [ ] GAP-SAD2 — banco cai durante validação de `ws_token` (mock de `AsyncSession` lançando exceção): WS fecha com código 4001 ou 1011, sem stack trace exposto ao cliente
 
 ### Blocked by
 - #1

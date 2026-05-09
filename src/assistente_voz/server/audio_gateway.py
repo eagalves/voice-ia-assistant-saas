@@ -388,7 +388,15 @@ class AudioGateway:
     def unregister_drain_callback(self, conn_id: str) -> None:
         get_drain_manager().unregister(conn_id)
 
-    # ── TTL helper ───────────────────────────────────────────────────────────
+    # ── Session close ────────────────────────────────────────────────────────
+
+    async def close(self) -> None:
+        """Mark session as closed: set STREAM_TTL_SECONDS TTL on the stream key.
+
+        Called by the router after ``POST /v1/sessions/{id}/close`` succeeds.
+        Delegates to ``set_stream_ttl()`` for a single source of truth.
+        """
+        await self.set_stream_ttl()
 
     async def set_stream_ttl(self) -> None:
         """Set 24h TTL on the Redis Stream after session close."""
