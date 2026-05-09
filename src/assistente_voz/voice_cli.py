@@ -77,6 +77,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Silence required to close an utterance (ms). Higher = groups long pauses")
     p.add_argument("--preroll-ms", type=int, default=DEFAULT_PREROLL_MS,
                    help="Audio kept before VAD opens an utterance (ms)")
+    p.add_argument("--min-final-conf", type=float, default=0.55,
+                   help="Minimum confidence required to forward a final STT segment to the LLM")
 
     return p
 
@@ -354,6 +356,14 @@ class LLMWorker:
             self._thread.join(timeout=timeout)
         return self._thread is None or not self._thread.is_alive()
 
+    def stop_accepting(self) -> None:
+        """Stop accepting new utterances immediately.
+
+        This is used by Voice CLI shutdown so transcriber flushes cannot keep
+        extending the LLM queue after the user requested stop.
+        """
+        self._stop.set()
+
     def pending(self) -> int:
         """Number of items still waiting in the queue (not counting in-flight)."""
         return self._queue.qsize()
@@ -461,8 +471,14 @@ def run_voice_mode(args: argparse.Namespace) -> int:
 
     def _on_caption_event(ev: CaptionEvent) -> None:
         renderer(ev)
-        if ev.is_final and ev.text.strip():
+        if ev.is_final and ev.text.strip() and ev.confidence >= args.min_final_conf:
             llm_worker.enqueue(ev.text.strip())
+        elif ev.is_final and ev.text.strip() and args.debug_audio:
+            print(
+                f"[voice] skipped low-confidence final conf={ev.confidence:.2f} "
+                f"(< {args.min_final_conf:.2f})",
+                flush=True,
+            )
 
     # Pre-load models so the first utterance doesn't include the model-load delay.
     _warmup(final_be, "final", args.debug_audio)
@@ -498,8 +514,10 @@ def run_voice_mode(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\n[voice] stopping…", flush=True)
     finally:
+        # Stop LLM intake first so transcriber flushes cannot add more requests.
+        llm_worker.stop_accepting()
         transcriber.stop()
-        per_call_timeout = float(os.getenv("OLLAMA_TIMEOUT_S", "30.0"))
+        per_call_timeout = float(os.getenv("VOICE_CLI_SHUTDOWN_TIMEOUT_S", "3.0"))
         clean = llm_worker.shutdown(per_call_timeout_s=per_call_timeout)
         if not clean:
             pending = llm_worker.pending()
