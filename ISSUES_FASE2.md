@@ -896,15 +896,15 @@ com status, métricas e logs relevantes — usado para decisão de avançar para
 - 100% de detecção obrigatória → falha bloqueia go-live
 
 ### Acceptance criteria
-- [ ] `test_gate_dod20` passa somente quando todos os 9 checks passam individualmente
-- [ ] `test_gate_dod20` falha com mensagem explícita dos checks que falharam (não apenas
+- [x] `test_gate_dod20` passa somente quando todos os 9 checks passam individualmente
+- [x] `test_gate_dod20` falha com mensagem explícita dos checks que falharam (não apenas
   assert genérico)
-- [ ] Evidência JSON gerada em `docs/gate/dod20_evidence_{timestamp}.json` a cada execução
+- [x] Evidência JSON gerada em `docs/gate/dod20_evidence_{timestamp}.json` a cada execução
 - [ ] WER ≤ 10% na bateria de 50 frases clínicas com Deepgram Nova-2
 - [ ] RED_FLAG detectado em 100% dos casos na bateria (Deepgram + Whisper)
-- [ ] Cobertura ≥ 90% dos 8 campos obrigatórios da Anamnese no item #8
+- [x] Cobertura ≥ 90% dos 8 campos obrigatórios da Anamnese no item #8
 - [ ] Latência p95 ≤ 15s por bloco no item #7 (medida em 20 execuções com áudio sintético)
-- [ ] Todos os testes de issues #1–#10 passam antes que esta suite seja executada
+- [x] Todos os testes de issues #1–#10 passam antes que esta suite seja executada
 
 ### Blocked by
 - #2

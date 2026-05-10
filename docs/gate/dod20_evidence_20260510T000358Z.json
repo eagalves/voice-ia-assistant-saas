@@ -1,0 +1,59 @@
+{
+  "timestamp": "20260510T000358Z",
+  "integravel": true,
+  "checks": [
+    {
+      "check": "1_session_lifecycle",
+      "status": "pass",
+      "elapsed_s": 0.0
+    },
+    {
+      "check": "2_reconnect_dedup",
+      "status": "pass",
+      "elapsed_s": 0.0
+    },
+    {
+      "check": "3_draft_state_machine",
+      "status": "pass",
+      "elapsed_s": 0.0
+    },
+    {
+      "check": "4_auth_jwt_and_ws_token",
+      "status": "pass",
+      "elapsed_s": 0.0
+    },
+    {
+      "check": "5_fallback_stt_circuit_breaker",
+      "status": "pass",
+      "elapsed_s": 0.018
+    },
+    {
+      "check": "6_confidence_threshold_configurable",
+      "status": "pass",
+      "elapsed_s": 0.0
+    },
+    {
+      "check": "7_latency_p95",
+      "status": "skipped",
+      "elapsed_s": 0.0
+    },
+    {
+      "check": "8_medical_profile_field_coverage",
+      "status": "pass",
+      "elapsed_s": 0.004
+    },
+    {
+      "check": "9_observability_metrics",
+      "status": "pass",
+      "elapsed_s": 0.0
+    }
+  ],
+  "failures": [],
+  "skipped": [
+    {
+      "check": "7_latency_p95",
+      "status": "skipped",
+      "elapsed_s": 0.0
+    }
+  ]
+}
