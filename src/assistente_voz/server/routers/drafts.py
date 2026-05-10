@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...errors import ApiError
 from ..context import SessionContext
 from ..deps import get_db_session, get_tenant_id
+from ..kill_switch import get_kill_switch
+from ..metrics import draft_correction_ratio_histogram, draft_kill_switch_gauge
 from ..repositories.drafts_repo import DraftsRepository
 from ..repositories.feedback_repo import FeedbackRepository
 from ..repositories.sessions_repo import SessionsRepository
@@ -21,6 +23,7 @@ from ..schemas.drafts import (
     DraftReadyOut,
     DraftRetryOut,
 )
+from ..tracing import get_tracer
 
 router = APIRouter(prefix="/v1/sessions", tags=["drafts"])
 
@@ -163,14 +166,25 @@ async def submit_feedback(
     else:
         ratio = payload.chars_edited / payload.chars_original
 
-    feedback_repo = FeedbackRepository(db, tenant_id)
-    await feedback_repo.insert(
-        session_id=session_id,
-        chars_original=payload.chars_original,
-        chars_edited=payload.chars_edited,
-        correction_ratio=ratio,
-        fields_corrected=payload.fields_corrected,
-        session_kind=session.session_kind,
-        actor_sub=payload.actor_sub,
-    )
+    with get_tracer().start_as_current_span("submit_feedback") as span:
+        span.set_attribute("session_id", str(session_id))
+        span.set_attribute("tenant_id", tenant_id)
+
+        feedback_repo = FeedbackRepository(db, tenant_id)
+        await feedback_repo.insert(
+            session_id=session_id,
+            chars_original=payload.chars_original,
+            chars_edited=payload.chars_edited,
+            correction_ratio=ratio,
+            fields_corrected=payload.fields_corrected,
+            session_kind=session.session_kind,
+            actor_sub=payload.actor_sub,
+        )
+
+        draft_correction_ratio_histogram.observe(ratio)
+        ks = get_kill_switch()
+        ks.record(payload.actor_sub or "", ratio)
+        if ks.is_active:
+            draft_kill_switch_gauge.set(1.0)
+
     return DraftFeedbackOut(session_id=session_id, correction_ratio=round(ratio, 4))

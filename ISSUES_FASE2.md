@@ -765,21 +765,21 @@ stt_circuit_state                                  # da Issue #7
   Redis shared config) ativado pelos critérios acima; SRE notificado via PagerDuty
 
 ### Acceptance criteria
-- [ ] `POST /v1/sessions/{id}/draft/feedback` armazena campos em `draft_feedback` com
+- [x] `POST /v1/sessions/{id}/draft/feedback` armazena campos em `draft_feedback` com
   `tenant_id` correto
-- [ ] `correction_ratio` calculado como `chars_edited / chars_original` (validado com
+- [x] `correction_ratio` calculado como `chars_edited / chars_original` (validado com
   dados sintéticos)
-- [ ] Métrica `draft_correction_ratio` exportada como histogram no Prometheus
-- [ ] Kill switch automático ativado quando `correction_ratio > 0.50` em 2 Sessões
+- [x] Métrica `draft_correction_ratio` exportada como histogram no Prometheus
+- [x] Kill switch automático ativado quando `correction_ratio > 0.50` em 2 Sessões
   consecutivas do mesmo `actor_sub` (testado com mock de 2 feedbacks)
-- [ ] Transcrição continua ativa quando kill switch de draft ativo (`DRAFT_GENERATION_ENABLED=0`)
-- [ ] `draft_kill_switch_active` exportado como gauge Prometheus quando kill switch ativo
-- [ ] Trace OTel com `session_id` e `correlation_id` atravessando AudioGateway → STTPool
+- [x] Transcrição continua ativa quando kill switch de draft ativo (`DRAFT_GENERATION_ENABLED=0`)
+- [x] `draft_kill_switch_active` exportado como gauge Prometheus quando kill switch ativo
+- [x] Trace OTel com `session_id` e `correlation_id` atravessando AudioGateway → STTPool
   (validado com mock OTel exporter)
-- [ ] structlog emite JSON com `correlation_id`, `session_id`, `tenant_id` em todo log de
+- [x] structlog emite JSON com `correlation_id`, `session_id`, `tenant_id` em todo log de
   processamento de Sessão
-- [ ] Alerta Prometheus configurado para `deepgram_concurrent_sessions / deepgram_max_concurrent > 0.70`
-- [ ] Migration Alembic com `downgrade()` obrigatório
+- [x] Alerta Prometheus configurado para `deepgram_concurrent_sessions / deepgram_max_concurrent > 0.70`
+- [x] Migration Alembic com `downgrade()` obrigatório
 
 ### Blocked by
 - #5
