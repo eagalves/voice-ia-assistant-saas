@@ -72,7 +72,7 @@ async def _drop_all_objects(database_url: str) -> None:
         async with engine.begin() as conn:
             await conn.exec_driver_sql(
                 "DROP TABLE IF EXISTS draft_feedback, drafts, sessions, "
-                "idempotency_keys, alembic_version CASCADE"
+                "idempotency_keys, audit_log, alembic_version CASCADE"
             )
     finally:
         await engine.dispose()
@@ -137,7 +137,7 @@ async def truncate_tables(db_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
     async with db_engine.begin() as conn:
         await conn.exec_driver_sql(
-            "TRUNCATE TABLE draft_feedback, drafts, sessions, idempotency_keys "
+            "TRUNCATE TABLE draft_feedback, drafts, sessions, idempotency_keys, audit_log "
             "RESTART IDENTITY CASCADE"
         )
 

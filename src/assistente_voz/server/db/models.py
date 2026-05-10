@@ -168,3 +168,34 @@ class IdempotencyKey(Base):
             name="uq_idempotency_keys_scope",
         ),
     )
+
+
+class AuditLog(Base):
+    """Append-only audit log with SHA-256 hash chain.
+
+    Each event's ``event_hash`` = SHA-256(json(payload) + prev_hash).
+    The first event in a tenant's chain uses ``GENESIS_HASH`` ("0" * 64)
+    as ``prev_hash``. Tampering with any event breaks the chain.
+
+    Issue #12 — HITL Compliance.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    actor_sub: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -984,18 +984,18 @@ imediatamente.
 - [ ] Gate DoD 2.0 (#11) passou com evidências
 
 ### Acceptance criteria
-- [ ] Teste de hash chain: inserir N eventos e verificar que `hash[i]` referencia
+- [x] Teste de hash chain: inserir N eventos e verificar que `hash[i]` referencia
   `hash[i-1]` corretamente
-- [ ] Teste de integridade: modificar `payload` de um evento e verificar que a verificação
+- [x] Teste de integridade: modificar `payload` de um evento e verificar que a verificação
   do hash chain detecta a adulteração
-- [ ] Teste de gap: deletar um evento intermediário e verificar que a verificação detecta
+- [x] Teste de gap: deletar um evento intermediário e verificar que a verificação detecta
   gap na cadeia
-- [ ] AuditLog registra criação/encerramento/draft/exportação/login (teste com mock de
+- [x] AuditLog registra criação/encerramento/draft/exportação/login (teste com mock de
   Sessão completa)
-- [ ] `docs/compliance/dpa-internal.md` existe e contém cadeia Controlador/Operador
-- [ ] `docs/compliance/dpia-componente.md` existe com seção de risco residual do AuditLog
+- [x] `docs/compliance/dpa-internal.md` existe e contém cadeia Controlador/Operador
+- [x] `docs/compliance/dpia-componente.md` existe com seção de risco residual do AuditLog
   e campo de aceite formal
-- [ ] `docs/runbooks/breach-notification.md` existe com passos de notificação < 24h
+- [x] `docs/runbooks/breach-notification.md` existe com passos de notificação < 24h
 - [ ] Checklist de readiness assinado (artefato físico/digital fora do repositório) antes
   de qualquer paciente real
 
