@@ -65,6 +65,31 @@ class WhisperBackend(Protocol):
 # ── audio coercion helper ─────────────────────────────────────────────────────
 
 
+def _lowpass_fir(arr, sample_rate: int, cutoff_hz: float = 7000.0, numtaps: int = 121):
+    """Anti-alias low-pass (windowed-sinc FIR) applied before downsampling.
+
+    Without this, energy above 8 kHz (mic hiss, keyboard clicks) folds back
+    into the speech band during 48/44.1 kHz → 16 kHz conversion and degrades
+    Whisper accuracy. Uses FFT convolution for large buffers.
+    """
+    import numpy as np
+
+    nyquist = sample_rate / 2.0
+    norm = min(cutoff_hz / nyquist, 0.999)
+    n = np.arange(numtaps) - (numtaps - 1) / 2.0
+    h = norm * np.sinc(norm * n)
+    h *= np.hanning(numtaps)
+    h /= h.sum()
+
+    if arr.size * numtaps > 4_000_000:  # FFT path for long buffers
+        full = arr.size + numtaps - 1
+        nfft = 1 << (full - 1).bit_length()
+        out = np.fft.irfft(np.fft.rfft(arr, nfft) * np.fft.rfft(h, nfft), nfft)[:full]
+        start = (numtaps - 1) // 2
+        return out[start:start + arr.size].astype(np.float32)
+    return np.convolve(arr, h, mode="same").astype(np.float32)
+
+
 def _to_float32(audio: AudioInput, sample_rate: int = 16000):
     """Coerce the caller's audio buffer into a float32 ndarray in [-1, 1] @ 16 kHz.
 
@@ -72,8 +97,9 @@ def _to_float32(audio: AudioInput, sample_rate: int = 16000):
       - bytes: interpreted as 16-bit signed little-endian PCM mono at *sample_rate*.
       - numpy.ndarray of float32 [-1, 1]: returned as-is.
       - numpy.ndarray of int16: scaled to float32.
-    Resampling to 16 kHz is done with linear interpolation when needed — adequate
-    for STT and avoids pulling scipy/librosa.
+    Downsampling applies an anti-alias FIR low-pass before linear interpolation;
+    this keeps the pipeline dependency-free (no scipy/librosa) while avoiding
+    HF-noise aliasing into the speech band.
     """
     import numpy as np  # deferred — keeps import cost out of unit tests
 
@@ -90,6 +116,8 @@ def _to_float32(audio: AudioInput, sample_rate: int = 16000):
         arr = arr.mean(axis=1)  # downmix to mono
 
     if sample_rate != 16000 and arr.size > 0:
+        if sample_rate > 16000 and arr.size > 121:
+            arr = _lowpass_fir(arr, sample_rate)
         ratio = 16000 / float(sample_rate)
         new_len = int(round(arr.shape[0] * ratio))
         if new_len > 0:
@@ -100,22 +128,107 @@ def _to_float32(audio: AudioInput, sample_rate: int = 16000):
     return np.ascontiguousarray(arr, dtype=np.float32)
 
 
+def _condition_audio(arr, target_peak: float = 0.95, max_gain: float = 40.0):
+    """Remove DC offset and normalise quiet captures to a healthy peak level.
+
+    Whisper's log-mel front-end is not level-invariant: audio captured at a low
+    mic gain (common on Windows laptops) transcribes measurably worse. Gain is
+    capped so digital silence / noise floors are never blown up into
+    hallucination fodder.
+    """
+    import numpy as np
+
+    if arr.size == 0:
+        return arr
+    mean = float(arr.mean())
+    if abs(mean) > 1e-3:
+        arr = arr - mean
+    peak = float(np.max(np.abs(arr)))
+    if 1e-4 < peak < target_peak:
+        arr = arr * min(target_peak / peak, max_gain)
+    return np.ascontiguousarray(arr, dtype=np.float32)
+
+
+DEFAULT_TEMPERATURE_LADDER: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+
+
+def parse_temperature_env(raw: str | None) -> float | tuple[float, ...]:
+    """Parse WHISPER_TEMPERATURE: single float, CSV ladder, or default ladder.
+
+    Invalid values fall back to the default ladder with a warning — a typo in
+    .env must never disable the decode-failure safety net silently.
+    """
+    if raw is None or not raw.strip():
+        return DEFAULT_TEMPERATURE_LADDER
+    try:
+        values = tuple(float(part) for part in raw.split(",") if part.strip())
+    except ValueError:
+        _logger.warning(
+            "WHISPER_TEMPERATURE=%r is not a float or CSV of floats; "
+            "using default ladder %s", raw, DEFAULT_TEMPERATURE_LADDER,
+        )
+        return DEFAULT_TEMPERATURE_LADDER
+    if not values:
+        return DEFAULT_TEMPERATURE_LADDER
+    return values[0] if len(values) == 1 else values
+
+
+# ── pt-BR hallucination guard ─────────────────────────────────────────────────
+
+# Whisper models hallucinate YouTube/subtitle boilerplate on silence or noise.
+# Matching is done on accent-stripped, punctuation-free, lowercase text.
+# Tier 1: never legitimate output — always dropped (substring match).
+_PT_HALLUCINATION_ALWAYS = ("amaraorg", "legendas pela comunidade")
+# Tier 2: plausible-but-suspect closers — dropped only when Whisper itself
+# flags the segment as probably-not-speech.
+_PT_HALLUCINATION_SUSPECT = frozenset({
+    "obrigado por assistir",
+    "obrigado por assistir ate o proximo video",
+    "ate o proximo video",
+    "inscrevase no canal",
+    "nao se esqueca de se inscrever no canal",
+    "curta e compartilhe",
+    "tchau tchau",
+})
+
+
+def _normalize_for_match(text: str) -> str:
+    import re
+    import unicodedata
+
+    stripped = unicodedata.normalize("NFKD", text.lower())
+    stripped = "".join(c for c in stripped if not unicodedata.combining(c))
+    stripped = re.sub(r"[^a-z0-9 ]+", "", stripped)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def _is_hallucinated_segment(text: str, no_speech_prob: float | None) -> bool:
+    norm = _normalize_for_match(text)
+    if not norm:
+        return False
+    if any(marker in norm for marker in _PT_HALLUCINATION_ALWAYS):
+        return True
+    return norm in _PT_HALLUCINATION_SUSPECT and (no_speech_prob or 0.0) >= 0.5
+
+
 # ── Whisper model cache (singleton per process) ───────────────────────────────
 
-# Key: (model_size, device, compute_type) — the three parameters that determine
-# which model file is loaded from disk. beam_size / temperature etc. are
-# inference-time parameters and do not affect the loaded model.
-_model_cache: dict[tuple[str, str, str], object] = {}
+# Key: (model_size, device, compute_type, cpu_threads) — the parameters that
+# determine which model/runtime is instantiated. beam_size / temperature etc.
+# are inference-time parameters and do not affect the loaded model.
+_model_cache: dict[tuple[str, str, str, int], object] = {}
 _model_cache_lock = threading.Lock()
 
 
-def _get_cached_model(model_size: str, device: str, compute_type: str) -> object:
+def _get_cached_model(
+    model_size: str, device: str, compute_type: str, cpu_threads: int = 0
+) -> object:
     """Return a WhisperModel for the given config, loading it once per process.
 
     Thread-safe: concurrent callers with the same key block until the first
     load completes, then receive the cached instance.
     """
-    cache_key = (model_size, device, compute_type)
+    cache_key = (model_size, device, compute_type, cpu_threads)
 
     # Fast path — model already cached (no lock needed for read after first load).
     if cache_key in _model_cache:
@@ -133,7 +246,9 @@ def _get_cached_model(model_size: str, device: str, compute_type: str) -> object
             model_size, device, compute_type,
         )
         t0 = time.perf_counter()
-        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        model = WhisperModel(
+            model_size, device=device, compute_type=compute_type, cpu_threads=cpu_threads
+        )
         elapsed_ms = (time.perf_counter() - t0) * 1000
         _logger.info(
             "WhisperModel: '%s' loaded in %.0f ms — cached for this process",
@@ -170,7 +285,19 @@ class FasterWhisperBackend:
     ``vad_filter`` controls whether we ask Whisper's internal Silero VAD to
     re-trim the buffer.  In the streaming path we already segmented with our
     own VAD, so leaving this on doubles up and frequently drops short words —
-    keep it OFF for live captioning.
+    keep it OFF for live captioning.  Turn it ON for long, unsegmented files
+    (batch/API path) where it both speeds up decoding and prevents silence
+    hallucinations.
+
+    ``temperature`` accepts the faster-whisper fallback ladder: when a decode
+    fails quality checks (compression_ratio / avg_logprob), the model retries
+    at the next temperature instead of returning garbage.  A single 0.0 value
+    disables that safety net — only do it for latency-critical partials.
+
+    ``initial_prompt`` primes the decoder with domain vocabulary (e.g. drug
+    names, clinical terms) and the expected register — one of the highest-
+    leverage accuracy knobs for pt-BR medical speech.  ``hotwords`` is a
+    lighter-weight variant for a handful of critical terms.
     """
 
     def __init__(
@@ -184,7 +311,13 @@ class FasterWhisperBackend:
         condition_on_previous_text: bool = False,
         no_speech_threshold: float = 0.6,
         log_prob_threshold: float = -1.0,
-        temperature: float = 0.0,
+        temperature: float | tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+        compression_ratio_threshold: float = 2.4,
+        initial_prompt: str | None = None,
+        hotwords: str | None = None,
+        cpu_threads: int = 0,
+        condition_audio: bool = True,
+        filter_hallucinations: bool = True,
     ) -> None:
         self._model_size = model_size
         self._device = device
@@ -196,12 +329,21 @@ class FasterWhisperBackend:
         self._no_speech_threshold = no_speech_threshold
         self._log_prob_threshold = log_prob_threshold
         self._temperature = temperature
+        self._compression_ratio_threshold = compression_ratio_threshold
+        self._initial_prompt = initial_prompt
+        self._hotwords = hotwords
+        self._cpu_threads = cpu_threads
+        self._condition_audio = condition_audio
+        self._filter_hallucinations = filter_hallucinations
+        # Normalized prompt for echo suppression: on silence, Whisper tends to
+        # parrot the initial_prompt back as if it had been spoken.
+        self._prompt_norm = _normalize_for_match(initial_prompt) if initial_prompt else ""
         self._model = None  # local reference; populated from process-level cache on first use
 
     def _load(self):
         if self._model is None:
             self._model = _get_cached_model(
-                self._model_size, self._device, self._compute_type
+                self._model_size, self._device, self._compute_type, self._cpu_threads
             )
         return self._model
 
@@ -216,6 +358,8 @@ class FasterWhisperBackend:
         samples = _to_float32(audio, sample_rate=effective_rate)
         if samples.size == 0:
             return "", 0.0
+        if self._condition_audio:
+            samples = _condition_audio(samples)
 
         segments, info = model.transcribe(
             samples,
@@ -226,6 +370,9 @@ class FasterWhisperBackend:
             no_speech_threshold=self._no_speech_threshold,
             log_prob_threshold=self._log_prob_threshold,
             temperature=self._temperature,
+            compression_ratio_threshold=self._compression_ratio_threshold,
+            initial_prompt=self._initial_prompt,
+            hotwords=self._hotwords,
             word_timestamps=False,
         )
 
@@ -234,6 +381,21 @@ class FasterWhisperBackend:
         no_speech_probs: list[float] = []
         for seg in segments:
             t = seg.text.strip()
+            no_sp = getattr(seg, "no_speech_prob", None)
+            if t and self._filter_hallucinations and _is_hallucinated_segment(t, no_sp):
+                _logger.debug("FasterWhisperBackend: dropped hallucinated segment %r", t)
+                continue
+            if (
+                t
+                and self._filter_hallucinations
+                and self._prompt_norm
+                and (no_sp or 0.0) >= 0.4
+                and _normalize_for_match(t) in self._prompt_norm
+            ):
+                # Prompt echo: the decoder emitted (part of) the initial_prompt
+                # over a buffer it itself flags as probably-not-speech.
+                _logger.debug("FasterWhisperBackend: dropped prompt echo %r", t)
+                continue
             if t:
                 texts.append(t)
             avg_logprob = getattr(seg, "avg_logprob", None)
@@ -241,7 +403,6 @@ class FasterWhisperBackend:
                 # exp(avg_logprob) is a calibrated 0–1 probability — much more
                 # consistent than 1 + logprob with a hard clamp.
                 seg_confidences.append(math.exp(avg_logprob))
-            no_sp = getattr(seg, "no_speech_prob", None)
             if no_sp is not None:
                 no_speech_probs.append(no_sp)
 
@@ -343,13 +504,20 @@ class STTService:
     def from_env(cls) -> "STTService":
         """Build an STTService from environment variables.
 
-        WHISPER_MODEL      — model size (default: small)
-        WHISPER_DEVICE     — cpu or cuda (default: cpu)
-        WHISPER_COMPUTE    — int8 / int8_float16 / float16 (default: int8)
-        WHISPER_BEAM_SIZE  — beam width (default: 5)
-        STT_LANGUAGE       — BCP-47 language code (default: pt)
-        STT_CONFIDENCE     — threshold 0.0–1.0 (default: 0.55)
-        STT_MAX_RETRIES    — integer (default: 1)
+        WHISPER_MODEL          — model size (default: small)
+        WHISPER_DEVICE         — cpu or cuda (default: cpu)
+        WHISPER_COMPUTE        — int8 / int8_float16 / float16 (default: int8)
+        WHISPER_BEAM_SIZE      — beam width (default: 5)
+        WHISPER_CPU_THREADS    — CTranslate2 intra-op threads; 0 = library default
+        WHISPER_TEMPERATURE    — single value ("0.0") or CSV fallback ladder
+                                 ("0.0,0.2,0.4"); default: full ladder
+        WHISPER_INITIAL_PROMPT — decoder priming text (domain vocabulary)
+        WHISPER_HOTWORDS       — comma/space separated critical terms
+        WHISPER_VAD_FILTER     — "1"/"true" enables internal Silero VAD
+                                 (for unsegmented audio; keep off for live path)
+        STT_LANGUAGE           — BCP-47 language code (default: pt)
+        STT_CONFIDENCE         — threshold 0.0–1.0 (default: 0.55)
+        STT_MAX_RETRIES        — integer (default: 1)
         """
         model_size = os.getenv("WHISPER_MODEL", "small")
         device = os.getenv("WHISPER_DEVICE", "cpu")
@@ -365,6 +533,12 @@ class STTService:
                 device=device,
                 compute_type=compute_type,
                 beam_size=beam_size,
+                cpu_threads=int(os.getenv("WHISPER_CPU_THREADS", "0")),
+                temperature=parse_temperature_env(os.getenv("WHISPER_TEMPERATURE")),
+                initial_prompt=os.getenv("WHISPER_INITIAL_PROMPT") or None,
+                hotwords=os.getenv("WHISPER_HOTWORDS") or None,
+                vad_filter=os.getenv("WHISPER_VAD_FILTER", "").strip().lower()
+                in ("1", "true", "yes", "on"),
             ),
             language=language,
             confidence_threshold=threshold,

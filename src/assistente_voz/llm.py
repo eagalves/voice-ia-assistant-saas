@@ -154,10 +154,14 @@ class OllamaBackend:
         base_url: str = "http://localhost:11434",
         model: str = "qwen2.5:3b",
         timeout_s: float = 30.0,
+        options: dict | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout_s = timeout_s
+        # Ollama runtime options (e.g. {"temperature": 0} for deterministic
+        # output in correction/extraction tasks). None keeps server defaults.
+        self._options = options
 
     def complete(self, messages: list[dict]) -> tuple[str, str, str]:
         url = f"{self._base_url}/api/chat"
@@ -166,6 +170,8 @@ class OllamaBackend:
             "messages": messages,
             "stream": False,
         }
+        if self._options:
+            payload["options"] = self._options
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -417,6 +423,39 @@ def _should_notify_fallback() -> bool:
     return _env_bool("LLM_NOTIFY_FALLBACK", default=False)
 
 
+def build_backend_from_env(
+    provider: str,
+    model_override: str | None = None,
+    ollama_options: dict | None = None,
+) -> LLMBackend:
+    """Build a concrete LLMBackend for *provider* using the standard env vars.
+
+    Shared by LLMService.from_env and other LLM consumers (e.g. the STT
+    post-corrector) so provider/env wiring lives in one place.
+    ``ollama_options`` is forwarded to OllamaBackend only (runtime options
+    such as {"temperature": 0}); other providers ignore it.
+    """
+    selected = provider.strip().lower()
+    if selected in {"api", "openai"}:
+        api_key = os.environ["LLM_API_KEY"]
+        model = model_override or os.getenv("OPENAI_MODEL", os.getenv("LLM_MODEL", "gpt-4o"))
+        return OpenAIBackend(api_key=api_key, model=model)
+    if selected == "gemini":
+        api_key = os.environ["GEMINI_API_KEY"]
+        model = model_override or os.getenv(
+            "GEMINI_MODEL", os.getenv("LLM_MODEL", "gemini-2.0-flash")
+        )
+        return GeminiBackend(api_key=api_key, model=model)
+    if selected in {"ollama", "local"}:
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        model = model_override or os.getenv("OLLAMA_MODEL", os.getenv("LLM_MODEL", "qwen2.5:3b"))
+        timeout_s = float(os.getenv("OLLAMA_TIMEOUT_S", "30"))
+        return OllamaBackend(
+            base_url=base_url, model=model, timeout_s=timeout_s, options=ollama_options
+        )
+    raise ValueError("Unsupported LLM provider. Use: api, openai, gemini, ollama")
+
+
 # ── system prompt builder ─────────────────────────────────────────────────────
 
 
@@ -627,25 +666,9 @@ class LLMService:
         fallback_enabled = _env_bool("LLM_FALLBACK_ENABLED", default=False)
         fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "").strip().lower()
 
-        def _build_backend(selected_provider: str) -> LLMBackend:
-            if selected_provider in {"api", "openai"}:
-                api_key = os.environ["LLM_API_KEY"]
-                model = os.getenv("OPENAI_MODEL", os.getenv("LLM_MODEL", "gpt-4o"))
-                return OpenAIBackend(api_key=api_key, model=model)
-            if selected_provider == "gemini":
-                api_key = os.environ["GEMINI_API_KEY"]
-                model = os.getenv("GEMINI_MODEL", os.getenv("LLM_MODEL", "gemini-2.0-flash"))
-                return GeminiBackend(api_key=api_key, model=model)
-            if selected_provider in {"ollama", "local"}:
-                base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-                model = os.getenv("OLLAMA_MODEL", os.getenv("LLM_MODEL", "qwen2.5:3b"))
-                timeout_s = float(os.getenv("OLLAMA_TIMEOUT_S", "30"))
-                return OllamaBackend(base_url=base_url, model=model, timeout_s=timeout_s)
-            raise ValueError("Unsupported LLM provider. Use: api, openai, gemini, ollama")
-
-        backend: LLMBackend = _build_backend(provider)
+        backend: LLMBackend = build_backend_from_env(provider)
         if fallback_enabled and fallback_provider:
-            fallback_backend = _build_backend(fallback_provider)
+            fallback_backend = build_backend_from_env(fallback_provider)
             if fallback_backend.provider_name != backend.provider_name:
                 backend = FallbackBackend(
                     primary=backend,

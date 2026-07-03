@@ -112,7 +112,14 @@ def _print_devices() -> int:
 
 
 def _make_final_backend(debug: bool) -> FasterWhisperBackend:
-    """Build the final-pass model — the only model needed in completude mode."""
+    """Build the final-pass model — the only model needed in completude mode.
+
+    Accuracy-first: temperature fallback ladder (re-decodes segments that fail
+    quality checks) + optional domain priming via WHISPER_INITIAL_PROMPT /
+    WHISPER_HOTWORDS.
+    """
+    from assistente_voz.stt import parse_temperature_env
+
     shared_default = os.getenv("WHISPER_MODEL")
     final_model = os.getenv("WHISPER_FINAL_MODEL", shared_default or "small")
     device = os.getenv("WHISPER_DEVICE", "cpu")
@@ -124,7 +131,10 @@ def _make_final_backend(debug: bool) -> FasterWhisperBackend:
         vad_filter=False, condition_on_previous_text=False,
         no_speech_threshold=0.6,
         log_prob_threshold=-1.0,
-        temperature=0.0,
+        temperature=parse_temperature_env(os.getenv("WHISPER_TEMPERATURE")),
+        initial_prompt=os.getenv("WHISPER_INITIAL_PROMPT") or None,
+        hotwords=os.getenv("WHISPER_HOTWORDS") or None,
+        cpu_threads=int(os.getenv("WHISPER_CPU_THREADS", "0")),
     )
     if debug:
         print(f"[stt] final={final_model} device={device} compute={compute_type}", flush=True)
@@ -132,7 +142,11 @@ def _make_final_backend(debug: bool) -> FasterWhisperBackend:
 
 
 def _make_partial_backend(debug: bool) -> FasterWhisperBackend:
-    """Build the partial-pass model — only used with --live-caption."""
+    """Build the partial-pass model — only used with --live-caption.
+
+    Latency-first: greedy decode, single temperature (no fallback ladder), no
+    prompt priming. Partials are throwaway — the final pass re-transcribes.
+    """
     shared_default = os.getenv("WHISPER_MODEL")
     partial_model = os.getenv("WHISPER_PARTIAL_MODEL", shared_default or "tiny")
     device = os.getenv("WHISPER_DEVICE", "cpu")
@@ -144,6 +158,7 @@ def _make_partial_backend(debug: bool) -> FasterWhisperBackend:
         no_speech_threshold=0.65,
         log_prob_threshold=-1.0,
         temperature=0.0,
+        cpu_threads=int(os.getenv("WHISPER_CPU_THREADS", "0")),
     )
     if debug:
         print(f"[stt] partial={partial_model}", flush=True)
@@ -447,11 +462,22 @@ def run_text_mode(text: str) -> int:
 
 
 def run_voice_mode(args: argparse.Namespace) -> int:
+    from dataclasses import replace
+
+    from assistente_voz.stt_correction import TranscriptCorrector
+
     try:
         llm, state = _build_llm_runtime()
     except Exception as exc:  # noqa: BLE001
         print(f"[voice-error] failed to initialize LLM runtime: {type(exc).__name__}: {exc}")
         return 1
+
+    # Pós-correção contextual opcional (STT_POSTCORRECT_ENABLED=1). Fail-open:
+    # qualquer erro do LLM mantém a transcrição original. A chamada roda na
+    # thread do stt-worker, então adiciona a latência do LLM entre um final e
+    # a próxima transcrição — ligar apenas quando a acurácia importa mais que
+    # a cadência (ex.: ditado de prontuário).
+    corrector = TranscriptCorrector.from_env()
 
     device = _resolve_device(args.input_device)
     source = MicrophoneSource(
@@ -470,6 +496,17 @@ def run_voice_mode(args: argparse.Namespace) -> int:
     llm_worker = LLMWorker(llm=llm, state=state, renderer=renderer)
 
     def _on_caption_event(ev: CaptionEvent) -> None:
+        if corrector is not None and ev.is_final and ev.text.strip():
+            result = corrector.correct(ev.text, confidence=ev.confidence)
+            if result.applied:
+                if args.debug_audio:
+                    print(
+                        f"[postcorrect] {result.original!r} -> {result.text!r} "
+                        f"({len(result.edits_applied)} edicao(oes), "
+                        f"{result.latency_ms:.0f}ms)",
+                        flush=True,
+                    )
+                ev = replace(ev, text=result.text)
         renderer(ev)
         if ev.is_final and ev.text.strip() and ev.confidence >= args.min_final_conf:
             llm_worker.enqueue(ev.text.strip())
@@ -499,8 +536,9 @@ def run_voice_mode(args: argparse.Namespace) -> int:
     )
 
     mode = "live-caption + final" if args.live_caption else "completude (final only)"
+    postcorrect = "on" if corrector is not None else "off"
     print(f"[voice] mode={mode}  vad_rms={args.vad_rms}  hang={args.hang_ms}ms  "
-          f"preroll={args.preroll_ms}ms", flush=True)
+          f"preroll={args.preroll_ms}ms  postcorrect={postcorrect}", flush=True)
     print(f"[voice] listening… speak now (Ctrl+C to stop)", flush=True)
 
     llm_worker.start()

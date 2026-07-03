@@ -33,6 +33,17 @@ Windows + PowerShell; venv at `.venv\Scripts\`. `pyproject.toml` sets `pythonpat
 # Voice CLI (MVP)
 .venv\Scripts\python.exe -m assistente_voz.voice_cli --duration 60
 .venv\Scripts\python.exe -m assistente_voz.voice_cli --text "Estou com dor de cabeca forte"
+
+# STT: benchmark de modelos Whisper sobre fixtures pt-BR (WER/CER/RTF)
+.venv\Scripts\python.exe scripts\benchmark_stt.py --models tiny,small,medium
+.venv\Scripts\python.exe scripts\benchmark_stt.py --models small --ab-baseline  # config antiga p/ comparacao
+
+# STT: regenerar fixtures de audio (Windows + voz pt-BR Microsoft Maria)
+.venv\Scripts\python.exe scripts\generate_stt_fixtures.py
+
+# STT: testes reais de transcricao (modelos de verdade; ~1 min)
+.venv\Scripts\python.exe -m pytest tests/test_stt_real_transcription.py -v
+# pular os lentos: -m "not stt_real" | incluir medium: STT_TEST_HEAVY=1
 ```
 
 Fase 2 tests require Postgres. Set `TEST_DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/dbname` or have Docker for testcontainers.
@@ -65,6 +76,12 @@ Fase 2 tests: `tests/fase2/test_issueNNN_<topic>.py`. `conftest.py` runs `alembi
 ### MVP voice pipeline (`src/assistente_voz/`)
 `MicrophoneSource → live_caption (VAD) → STTService → ConversationState → LLMService → voice_cli`
 
+Optional post-correction (`stt_correction.py`): an LLM proposes JSON edit-lists
+(`de`→`para`) applied programmatically under guardrails (no paraphrase, no
+deletion, phonetic-similarity per edit, divergence cap, fail-open). Enabled by
+`STT_POSTCORRECT_ENABLED`; quality eval helpers live in `stt_eval.py` (WER/CER
+with pt-BR normalization).
+
 `VoiceOrchestrator` knows only abstract contracts; never imports a concrete backend. Profile is the only domain switch — selected by `ASSISTANT_PROFILE` matching `profile.id` inside the YAML (filename is not authoritative).
 
 ## Invariants
@@ -77,7 +94,7 @@ Fase 2 tests: `tests/fase2/test_issueNNN_<topic>.py`. `conftest.py` runs `alembi
 - **All Alembic migrations must have a non-trivial `downgrade()`.** CI AST-scans this.
 
 **MVP voice pipeline:**
-- **Stable error codes.** `STT_EMPTY`, `STT_LOW_CONFIDENCE`, `STT_EXCEPTION`, `LLM_ERR_UNAVAILABLE`, `LLM_ERR_LOGICAL`, `LLM_EXCEPTION`, `PROFILE_*`, `CONFIG_*`. Reuse — don't invent ad-hoc strings.
+- **Stable error codes.** `STT_EMPTY`, `STT_LOW_CONFIDENCE`, `STT_EXCEPTION`, `LLM_ERR_UNAVAILABLE`, `LLM_ERR_LOGICAL`, `LLM_EXCEPTION`, `PROFILE_*`, `CONFIG_*`, `CORRECTION_*` (CorrectionOutcome). Reuse — don't invent ad-hoc strings.
 - **LLM retry only on `LLM_ERR_UNAVAILABLE`** (5xx/timeout). `LLM_ERR_LOGICAL` propagates immediately.
 - **`medical` profile:** `STT_CONFIDENCE_BLOCK` ≥ 0.70; red-flag detection mandatory before emitting final record.
 

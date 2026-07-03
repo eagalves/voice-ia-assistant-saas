@@ -42,3 +42,7 @@ assistente-voz-export-openapi = "assistente_voz.server.cli.export_openapi:main"
 pythonpath = ["src"]
 addopts = "-q"
 asyncio_mode = "auto"
+markers = [
+  "stt_real: transcricao real com faster-whisper sobre fixtures de audio (lento; pular com -m 'not stt_real')",
+  "llm_real: integracao real com LLM local (Ollama); skip automatico quando indisponivel",
+]

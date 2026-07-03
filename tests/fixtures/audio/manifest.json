@@ -1,0 +1,117 @@
+{
+  "voice": "Microsoft Maria Desktop",
+  "items": [
+    {
+      "id": "dor_cabeca",
+      "file": "dor_cabeca_16k.wav",
+      "sample_rate": 16000,
+      "variant": "clean",
+      "text": "O paciente relata dor de cabeça intensa há três dias e náusea pela manhã."
+    },
+    {
+      "id": "falta_ar",
+      "file": "falta_ar_16k.wav",
+      "sample_rate": 16000,
+      "variant": "clean",
+      "text": "Estou sentindo falta de ar quando subo escadas e o coração dispara."
+    },
+    {
+      "id": "pressao",
+      "file": "pressao_16k.wav",
+      "sample_rate": 16000,
+      "variant": "clean",
+      "text": "A pressão arterial está em quatorze por nove e a glicemia em jejum deu cento e dez."
+    },
+    {
+      "id": "pressao",
+      "file": "pressao_48k.wav",
+      "sample_rate": 48000,
+      "variant": "clean",
+      "text": "A pressão arterial está em quatorze por nove e a glicemia em jejum deu cento e dez."
+    },
+    {
+      "id": "pressao",
+      "file": "pressao_44k1.wav",
+      "sample_rate": 44100,
+      "variant": "clean",
+      "text": "A pressão arterial está em quatorze por nove e a glicemia em jejum deu cento e dez."
+    },
+    {
+      "id": "medicacao",
+      "file": "medicacao_16k.wav",
+      "sample_rate": 16000,
+      "variant": "clean",
+      "text": "Tomo losartana cinquenta miligramas de manhã e metformina depois do almoço."
+    },
+    {
+      "id": "medicacao",
+      "file": "medicacao_48k.wav",
+      "sample_rate": 48000,
+      "variant": "clean",
+      "text": "Tomo losartana cinquenta miligramas de manhã e metformina depois do almoço."
+    },
+    {
+      "id": "medicacao",
+      "file": "medicacao_44k1.wav",
+      "sample_rate": 44100,
+      "variant": "clean",
+      "text": "Tomo losartana cinquenta miligramas de manhã e metformina depois do almoço."
+    },
+    {
+      "id": "febre",
+      "file": "febre_16k.wav",
+      "sample_rate": 16000,
+      "variant": "clean",
+      "text": "A febre começou ontem à noite, junto com dor de garganta e calafrios."
+    },
+    {
+      "id": "consulta",
+      "file": "consulta_16k.wav",
+      "sample_rate": 16000,
+      "variant": "clean",
+      "text": "Preciso remarcar minha consulta de retorno para a próxima quinta-feira às dez horas."
+    },
+    {
+      "id": "dor_cabeca",
+      "file": "dor_cabeca_16k_quiet.wav",
+      "sample_rate": 16000,
+      "variant": "quiet",
+      "text": "O paciente relata dor de cabeça intensa há três dias e náusea pela manhã."
+    },
+    {
+      "id": "dor_cabeca",
+      "file": "dor_cabeca_16k_noisy.wav",
+      "sample_rate": 16000,
+      "variant": "noisy",
+      "text": "O paciente relata dor de cabeça intensa há três dias e náusea pela manhã."
+    },
+    {
+      "id": "medicacao",
+      "file": "medicacao_16k_quiet.wav",
+      "sample_rate": 16000,
+      "variant": "quiet",
+      "text": "Tomo losartana cinquenta miligramas de manhã e metformina depois do almoço."
+    },
+    {
+      "id": "medicacao",
+      "file": "medicacao_16k_noisy.wav",
+      "sample_rate": 16000,
+      "variant": "noisy",
+      "text": "Tomo losartana cinquenta miligramas de manhã e metformina depois do almoço."
+    },
+    {
+      "id": "silencio",
+      "file": "silencio_16k.wav",
+      "sample_rate": 16000,
+      "variant": "silence",
+      "text": ""
+    },
+    {
+      "id": "ruido",
+      "file": "ruido_16k.wav",
+      "sample_rate": 16000,
+      "variant": "noise_only",
+      "text": ""
+    }
+  ]
+}
