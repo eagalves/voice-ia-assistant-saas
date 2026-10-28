@@ -151,6 +151,46 @@ def _condition_audio(arr, target_peak: float = 0.95, max_gain: float = 40.0):
 
 DEFAULT_TEMPERATURE_LADDER: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 
+# Same contract as the Fase 2 server (PRD-fase2 "Configuração de confiança
+# STT"): single operational threshold, validated in [0.30, 0.95]; absent or
+# invalid → warning + 0.55, never a crash at boot.
+STT_CONFIDENCE_DEFAULT: float = 0.55
+STT_CONFIDENCE_MIN: float = 0.30
+STT_CONFIDENCE_MAX: float = 0.95
+
+
+def parse_confidence_env(raw: str | None) -> float:
+    """Validate ``STT_CONFIDENCE``; fall back to 0.55 with a warning."""
+    if raw is None or not raw.strip():
+        _logger.warning("STT_CONFIDENCE not set; using default %.2f", STT_CONFIDENCE_DEFAULT)
+        return STT_CONFIDENCE_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        _logger.warning(
+            "STT_CONFIDENCE=%r is not a valid float; using default %.2f",
+            raw, STT_CONFIDENCE_DEFAULT,
+        )
+        return STT_CONFIDENCE_DEFAULT
+    if not (STT_CONFIDENCE_MIN <= value <= STT_CONFIDENCE_MAX):
+        _logger.warning(
+            "STT_CONFIDENCE=%.2f outside [%.2f, %.2f]; using default %.2f",
+            value, STT_CONFIDENCE_MIN, STT_CONFIDENCE_MAX, STT_CONFIDENCE_DEFAULT,
+        )
+        return STT_CONFIDENCE_DEFAULT
+    return value
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        _logger.warning("%s=%r is not an int; using default %d", name, raw, default)
+        return default
+
 
 def parse_temperature_env(raw: str | None) -> float | tuple[float, ...]:
     """Parse WHISPER_TEMPERATURE: single float, CSV ladder, or default ladder.
@@ -299,6 +339,27 @@ class FasterWhisperBackend:
     leverage accuracy knobs for pt-BR medical speech.  ``hotwords`` is a
     lighter-weight variant for a handful of critical terms.
     """
+
+    @classmethod
+    def from_env(cls) -> "FasterWhisperBackend":
+        """Build the accuracy-first backend from ``WHISPER_*`` env vars.
+
+        Shared by ``STTService.from_env`` (Voice CLI) and the Fase 2 server
+        (``server.stt_service.LocalWhisperBatchBackend``) so both read the
+        same knobs documented in ``.env.example``.
+        """
+        return cls(
+            model_size=os.getenv("WHISPER_MODEL", "small"),
+            device=os.getenv("WHISPER_DEVICE", "cpu"),
+            compute_type=os.getenv("WHISPER_COMPUTE", "int8"),
+            beam_size=_env_int("WHISPER_BEAM_SIZE", 5),
+            cpu_threads=_env_int("WHISPER_CPU_THREADS", 0),
+            temperature=parse_temperature_env(os.getenv("WHISPER_TEMPERATURE")),
+            initial_prompt=os.getenv("WHISPER_INITIAL_PROMPT") or None,
+            hotwords=os.getenv("WHISPER_HOTWORDS") or None,
+            vad_filter=os.getenv("WHISPER_VAD_FILTER", "").strip().lower()
+            in ("1", "true", "yes", "on"),
+        )
 
     def __init__(
         self,
@@ -519,27 +580,12 @@ class STTService:
         STT_CONFIDENCE         — threshold 0.0–1.0 (default: 0.55)
         STT_MAX_RETRIES        — integer (default: 1)
         """
-        model_size = os.getenv("WHISPER_MODEL", "small")
-        device = os.getenv("WHISPER_DEVICE", "cpu")
-        compute_type = os.getenv("WHISPER_COMPUTE", "int8")
-        beam_size = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
         language = os.getenv("STT_LANGUAGE", "pt")
-        threshold = float(os.getenv("STT_CONFIDENCE", "0.55"))
-        max_retries = int(os.getenv("STT_MAX_RETRIES", "1"))
+        threshold = parse_confidence_env(os.getenv("STT_CONFIDENCE"))
+        max_retries = _env_int("STT_MAX_RETRIES", 1)
 
         return cls(
-            backend=FasterWhisperBackend(
-                model_size=model_size,
-                device=device,
-                compute_type=compute_type,
-                beam_size=beam_size,
-                cpu_threads=int(os.getenv("WHISPER_CPU_THREADS", "0")),
-                temperature=parse_temperature_env(os.getenv("WHISPER_TEMPERATURE")),
-                initial_prompt=os.getenv("WHISPER_INITIAL_PROMPT") or None,
-                hotwords=os.getenv("WHISPER_HOTWORDS") or None,
-                vad_filter=os.getenv("WHISPER_VAD_FILTER", "").strip().lower()
-                in ("1", "true", "yes", "on"),
-            ),
+            backend=FasterWhisperBackend.from_env(),
             language=language,
             confidence_threshold=threshold,
             max_retries=max_retries,

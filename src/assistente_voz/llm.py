@@ -614,17 +614,41 @@ class LLMService:
         ttft_ms: float = 0.0
         tokens: list[str] = []
         first_token = True
+        total_attempts = self._max_retries + 1
 
-        try:
-            for token in backend_stream(messages):
-                if first_token:
-                    ttft_ms = (time.perf_counter() - t0) * 1000
-                    first_token = False
-                tokens.append(token)
-                on_token(token)
-        except (AttributeError, NotImplementedError):
-            # stream() exists but raised NotImplementedError — fall back.
-            return self.complete(state)
+        # Same retry policy as complete(): only LLM_ERR_UNAVAILABLE and only
+        # while nothing has been emitted yet — after the first token the
+        # caller already rendered partial output, so a retry would duplicate
+        # text; mid-stream failures propagate (fail-soft at the orchestrator).
+        for attempt in range(1, total_attempts + 1):
+            try:
+                for token in backend_stream(messages):
+                    if first_token:
+                        ttft_ms = (time.perf_counter() - t0) * 1000
+                        first_token = False
+                    tokens.append(token)
+                    on_token(token)
+                break
+            except (AttributeError, NotImplementedError):
+                # stream() exists but raised NotImplementedError — fall back.
+                return self.complete(state)
+            except Exception as exc:  # noqa: BLE001
+                if not first_token:
+                    raise
+                error_code = _classify_error(exc)
+                if error_code != LLMErrorCode.UNAVAILABLE or attempt >= total_attempts:
+                    _logger.warning(
+                        "LLM stream attempt %d/%d failed: code=%s exc=%s — not retriable",
+                        attempt, total_attempts, error_code, type(exc).__name__,
+                    )
+                    raise
+                sleep_s = _compute_backoff(attempt, self._backoff_base_s, self._backoff_max_s)
+                _logger.warning(
+                    "LLM stream attempt %d/%d failed: code=%s exc=%s — retry in %.2fs",
+                    attempt, total_attempts, error_code, type(exc).__name__, sleep_s,
+                )
+                time.sleep(sleep_s)
+                t0 = time.perf_counter()
 
         latency_ms = (time.perf_counter() - t0) * 1000
         full_text = "".join(tokens)

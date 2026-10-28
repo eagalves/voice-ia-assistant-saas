@@ -88,7 +88,11 @@ class VoiceOrchestrator:
         # ---- STT stage ----
         stt_start = time.perf_counter()
         try:
-            stt_outcome = self._stt.transcribe(segment.audio_bytes)
+            # Always forward the capture rate: Windows mics often open at
+            # 44.1/48 kHz and the STT resamples to 16 kHz only when told.
+            stt_outcome = self._stt.transcribe(
+                segment.audio_bytes, sample_rate=segment.sample_rate
+            )
         except Exception as exc:  # noqa: BLE001
             stt_latency_ms = (time.perf_counter() - stt_start) * 1000
             e2e_latency_ms = (time.perf_counter() - e2e_start) * 1000

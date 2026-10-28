@@ -101,6 +101,23 @@ _FEW_SHOT: list[dict] = [
 _JSON_ARRAY = re.compile(r"\[.*\]", re.DOTALL)
 
 
+def _find_snippet(text: str, snippet: str) -> int:
+    """Index of *snippet* in *text* respecting word boundaries; -1 if absent.
+
+    A plain substring search would let an edit ``dor → dose`` rewrite the
+    inside of "ardor". Boundaries are only enforced on the sides of the
+    snippet that start/end with a word character (so "50mg" still matches
+    inside "50mg.").
+    """
+    pattern = re.escape(snippet)
+    if snippet[:1].isalnum():
+        pattern = r"(?<!\w)" + pattern
+    if snippet[-1:].isalnum():
+        pattern = pattern + r"(?!\w)"
+    match = re.search(pattern, text)
+    return match.start() if match else -1
+
+
 def _parse_edits(raw: str) -> list[tuple[str, str]] | None:
     """Extrai a lista de edições (de, para) da resposta do LLM; None se inválida."""
     match = _JSON_ARRAY.search(raw)
@@ -172,20 +189,21 @@ class TranscriptCorrector:
         rejected: list[tuple[str, str]] = []
         for de, para in edits[: self._max_edits]:
             de, para = de.strip(), para.strip()
+            position = _find_snippet(text, de) if de else -1
             if (
                 not de
                 or not para                       # deleção proibida
                 or de == para                     # no-op
                 or len(de.split()) > self._max_edit_words
                 or len(para.split()) > self._max_edit_words
-                or de not in text                 # trecho não existe → LLM inventou
+                or position < 0                   # trecho não existe → LLM inventou
                 # correções reais de ASR soam parecido com o original;
                 # reescritas de estilo ("de manhã"→"ao acordar") não.
                 or phonetic_similarity(de, para) < self._min_edit_similarity
             ):
                 rejected.append((de, para))
                 continue
-            text = text.replace(de, para, 1)
+            text = text[:position] + para + text[position + len(de):]
             applied.append((de, para))
         return text, applied, rejected
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+import unicodedata
+from dataclasses import dataclass
 
 
 REQUIRED_FIELDS = [
@@ -14,15 +16,44 @@ REQUIRED_FIELDS = [
     "sinais_de_alerta_atuais",
 ]
 
+# Canonical red-flag terms, written accent-free. Matching is done on
+# accent-stripped, lower-cased text (see ``normalize_clinical_text``), so a
+# transcription such as "convulsão" or "ideação suicida" matches the entries
+# below. Keep terms as whole-word phrases; the PRD battery examples
+# ("dor torácica irradiando para o braço", "perda de consciência súbita")
+# are covered by "dor toracica" and "perda de consciencia".
 RED_FLAG_TERMS = {
     "dor no peito",
+    "dor toracica",
     "dispneia",
     "falta de ar",
     "desmaio",
+    "perda de consciencia",
+    "sincope",
     "convulsao",
     "sangramento intenso",
     "ideacao suicida",
 }
+
+
+def normalize_clinical_text(text: str) -> str:
+    """Lower-case, strip accents and collapse whitespace/punctuation.
+
+    Whisper writes correct pt-BR orthography ("convulsão"); the canonical
+    term list is accent-free so both sides must be folded before matching.
+    """
+    folded = unicodedata.normalize("NFKD", text.lower())
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    folded = re.sub(r"[^a-z0-9]+", " ", folded)
+    return f" {folded.strip()} "
+
+
+def detect_red_flags(text: str) -> list[str]:
+    """Return the sorted canonical red-flag terms present in *text* (whole words)."""
+    if not text:
+        return []
+    normalized = normalize_clinical_text(text)
+    return sorted(term for term in RED_FLAG_TERMS if f" {term} " in normalized)
 
 
 @dataclass(frozen=True)
@@ -69,9 +100,7 @@ class MedicalProfileEngine:
         return f"Queixa principal: {qp}. Início: {inicio}. Duração: {duracao}."
 
     def _detect_red_flags(self, text: str) -> list[str]:
-        normalized = text.lower()
-        hits = [term for term in RED_FLAG_TERMS if term in normalized]
-        return sorted(hits)
+        return detect_red_flags(text)
 
     def _safety_guidance(self, has_red_flags: bool) -> str:
         if has_red_flags:

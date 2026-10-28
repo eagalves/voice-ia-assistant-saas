@@ -25,7 +25,7 @@ class _StubMetrics:
 
 
 class _StubSTT:
-    def transcribe(self, audio: bytes) -> STTOutcome:
+    def transcribe(self, audio: bytes, sample_rate: int | None = None) -> STTOutcome:
         return STTOutcome(
             status=TranscriptionStatus.OK,
             result=TranscriptionResult(text="qual e o sintoma", confidence=0.93, language="pt"),

@@ -26,7 +26,7 @@ class StubSTT:
         self._error = error
         self.calls = 0
 
-    def transcribe(self, audio: bytes) -> STTOutcome:
+    def transcribe(self, audio: bytes, sample_rate: int | None = None) -> STTOutcome:
         self.calls += 1
         if self._error:
             raise self._error
