@@ -121,3 +121,20 @@ Este glossário fixa os termos canônicos usados em todos os documentos (PRD, AD
 **Preset de latência** — bloco de configuração predefinido em `docs/latency_presets.md`: `baixa_latencia`, `balanceado`, `qualidade`.
 
 **Fail-soft** — política do orquestrador: erros em qualquer estágio são capturados e devolvidos como `error_code` em `TurnResult`, mantendo a Sessão viva. Nunca propagar exceção até a UI.
+
+
+## Implementação Fase 2 (revisão 2026-10-27)
+
+**Evento de transcrição** — entrada `type=transcript` no Redis Stream da Sessão, produzida pelo `SessionTranscriber` a partir de um segmento de áudio: `text`, `confidence`, `uncertain`, `speaker`, `seq_from/seq_to`, `server_timestamp_ms`, `red_flags`. É a única entrada do stream que entra no draft; entradas `type=frame` são metadados de dedupe/reconexão e apenas contadas.
+
+**Segmento (STT)** — bloco de PCM acumulado pelo `SessionTranscriber` até `STT_WINDOW_S` de áudio ou `STT_SILENCE_MS` de silêncio após fala. Segmentos sem fala (RMS abaixo de `STT_SILENCE_RMS`) são descartados sem chamar o STT. Diferente de *frame* (20 ms enviados pelo cliente) e de *utterance* (termo do Voice CLI para o mesmo conceito no caminho desktop).
+
+**Outbox (WebSocket)** — fila por conexão drenada por um único sender task; toda mensagem servidor → cliente (`transcript`, `red_flag`, `status`, `drain`, `token_expiring_in`, `error`, `pong`, `session_resumed`) passa por ela. Garante que callbacks de STT, revogação e expiração nunca escrevam no socket concorrentemente.
+
+**Reaper de Sessão** — tarefa in-process (`SESSION_REAPER_INTERVAL_S`) que aplica a transição `open → closed` a Sessões além de `auto_finalize_at`, usando `close_session_tx` (a mesma transação do `POST /close`) com `actor_sub=system:reaper` e evento `session.auto_finalized`. Ver ADR 0007.
+
+**Hard cap (token)** — instante `min(created_at + session_max_minutes, auto_finalize_at)` além do qual nenhum `ws_token` é válido; o refresh nunca o ultrapassa (`409 SESSION_HARD_CAP_REACHED`).
+
+**Hash chain (AuditLog)** — `event_hash = SHA-256(json({event_type, session_id, actor_sub, payload}) + prev_hash)` encadeado na ordem de `seq`; `verify_chain` reporta quebras `hash` (linha alterada) e `link` (linha removida/inserida). Trigger append-only bloqueia `UPDATE`/`DELETE`. Ver ADR 0004.
+
+**Backend de STT do servidor** — valor de `STT_SERVER_BACKEND`: `off` (frames aceitos e descartados), `fake` (dublês determinísticos), `local_whisper` (faster-whisper CPU em thread, ADR 0002); `deepgram` entra na Issue #19.

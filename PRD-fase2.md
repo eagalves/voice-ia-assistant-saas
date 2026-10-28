@@ -1,6 +1,6 @@
 # PRD — Fase 2: Componente Assistente Integrado ao App de Telemedicina
 
-> **Status**: Proposto (rev. 2 — fronteira Controlador/Operador corrigida).
+> **Status**: Proposto (rev. 3 — revisão de código de 2026-10-27; ver seção "Revisão 3" ao final). rev. 2: fronteira Controlador/Operador corrigida.
 > **Decisão arquitetural**: `docs/adr/0001-fase-2-telemedicina-saas.md`.
 > **Arquitetura detalhada**: `arquitetura-assistente-voz-mvp.md`, seção "Aditivo Fase 2 e Fase 3".
 > **Custos**: `custos.md`.
@@ -299,3 +299,67 @@ Plano Premium 30 min ≈ US$ 0,55 (sem ICP/KYC — esses são do app de telemedi
 Mesmo como Operador, riscos permanecem:
 - ANPD pode questionar tratamento por sub-operadores (Deepgram/OpenAI) — DPA cobre, mas auditoria contratual recorrente.
 - Multa LGPD: 2% do faturamento, até R$ 50M por infração — mitigação via DPA, AuditLog, retenção curta.
+
+---
+
+## Revisão 3 (2026-10-27) — Mudanças de contrato e decisões adicionais
+
+Resultado da revisão completa do código da Fase 2.0. Nenhum contrato do núcleo (ADR 0001) foi
+quebrado; os itens abaixo são aditivos ou correções de comportamento que o PRD já exigia e o
+código não cumpria. Backlog correspondente: `ISSUES_FASE2.md` #13–#22. Decisões: ADRs
+0002–0007.
+
+### API HTTP (`/v1`)
+
+- `POST /v1/sessions`: resposta ganha `ws_token_expires_at`; `seniority` é obrigatória para
+  `session_kind` de entrevista (`*_interviewer`) → `400 SESSION_INVALID_SENIORITY`.
+  Requisições concorrentes com a mesma `Idempotency-Key` resultam em **uma** Sessão (a
+  perdedora da corrida é descartada e recebe replay da vencedora).
+- `POST /v1/sessions/{id}/token/refresh`: `409 SESSION_ALREADY_CLOSED` em Sessão fechada;
+  `409 SESSION_HARD_CAP_REACHED` quando `min(created_at + session_max_minutes,
+  auto_finalize_at)` já passou; o novo TTL nunca ultrapassa esse instante. Resposta ganha
+  `ws_token_expires_at`.
+- `POST /v1/sessions/{id}/close`: além de revogar o token, aplica `EXPIRE 86400` ao stream da
+  Sessão e registra `session.closed` no AuditLog. `POST /draft/retry` reagenda a
+  materialização.
+- `GET /v1/sessions/{id}/draft` (`ready`) registra `draft.exported` no AuditLog. Conteúdo do
+  draft (schema v1): `transcript{segments[], text, segment_count, uncertain_count,
+  frame_count}`, `red_flags[]` (só `medical`), `fields{}` (extração LLM — Issue #15),
+  `draft_generation ∈ {transcript_only, disabled_by_kill_switch}`, `event_count`,
+  `materialized_at`.
+- `GET /metrics` (Prometheus, fora de `/v1`, sem Bearer — expor só na rede interna) e
+  `GET /health` com `event_stream` (`memory|redis`) e `stt_backend`.
+
+### WebSocket de áudio
+
+- Tenant resolvido por query `tenant_id` → header `X-Tenant-Id` → tenant default (browsers
+  não enviam headers; ADR 0006). O `ws_token` é válido **apenas** para a Sessão/tenant para a
+  qual foi emitido (`4001` caso contrário).
+- Novas mensagens servidor → cliente: `transcript` (segmento final: `text`, `confidence`,
+  `uncertain`, `speaker`, `seq_from/seq_to`, `stt_mode`), `red_flag` (`terms[]`, só
+  `medical` com `llm_realtime_red_flag`), `error{reason: FRAME_INVALID}` (frame descartado,
+  socket aberto), `pong`, `status{reason: connected|STT_SEGMENT_FAILED|STT_BACKEND_MISCONFIGURED}`.
+- Dedupe server-side por `(speaker, seq)` com `event_id` determinístico (uuid5): frame
+  reenviado após reconexão não duplica no stream.
+- Até a Issue #22, o payload do frame é **PCM16 LE @ 16 kHz mono** (sem decodificador Opus).
+
+### Operação
+
+- `STT_SERVER_BACKEND=off|fake|local_whisper` (ADR 0002); Deepgram/Whisper API entram na
+  Issue #19 após o DPA. `REDIS_URL` vazio usa stream em memória (ADR 0005).
+- Auto-finalize executado por reaper in-process (`SESSION_REAPER_INTERVAL_S`; ADR 0007) com a
+  mesma transação do `/close`.
+- AuditLog: hash sobre `{event_type, session_id, actor_sub, payload}` encadeado por `seq`,
+  trigger append-only e detecção de gap (ADR 0004). Eventos: `session.created|closed|
+  auto_finalized|token_refreshed`, `draft.materialized|failed|exported|retry_requested|
+  feedback_received`.
+- `APP_ENV=production|staging` sem `JWT_JWKS_URL` impede o boot (fail-fast; o bypass de auth
+  só existe para dev/testes).
+
+### Correções no DoD 2.0 (Issue #11)
+
+Os checks 1, 2 e 8 da suíte de gate eram estruturais (import de módulos, contagem de campos
+no YAML). O caminho ponta a ponta real — WS → transcrição → stream → draft `ready` — passa a
+ser coberto por `tests/fase2/test_issue014_stt_pipeline.py::test_ac12_*` com backend `fake`;
+o item 7 (latência) e as baterias WER/RED_FLAG continuam dependentes do backend gerenciado
+(Issue #19).

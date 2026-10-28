@@ -1001,3 +1001,331 @@ imediatamente.
 
 ### Blocked by
 - #11
+
+---
+
+> **Revisão de 2026-10-27.** As issues #13–#22 abaixo nasceram da revisão completa do código
+> (bugs e lacunas entre o que o backlog marcava como feito e o que rodava em produção).
+> Decisões de desenho estão nas ADRs 0002–0007 em `docs/adr/`.
+
+## 13) Redis Real atrás do Protocolo `EventStreamClient`
+Tipo: AFK
+
+### Context
+Toda a camada de Sessão (stream de eventos, snapshots, `ws_token`, revogação pub/sub) foi
+escrita contra um protocolo mínimo de Redis e testada com `FakeEventStream`. Em produção o
+servidor subia com o fake em memória, o `MaterializationWorker` criava um fake **novo e
+vazio** (draft sempre sem eventos) e o watcher de revogação lia um atributo privado do fake.
+Ver ADR 0005.
+
+### What to build
+- `RedisEventStream` (`redis.asyncio`, `decode_responses=True`) implementando
+  `xadd/xrange/xrevrange/xlen/set/get/expire/delete/publish/subscribe`.
+- `subscribe(channel)` entra no protocolo; `FakeEventStream` implementa por polling do log em
+  memória; o watcher de revogação do WS usa só o protocolo.
+- `get_stream_client()` escolhe por `REDIS_URL` (vazio → fake + warning no boot;
+  `/health` expõe `event_stream: memory|redis`).
+- `redis>=5.0` em `pyproject.toml`; marker `redis_real` + `TEST_REDIS_URL` para o teste de
+  conformidade do adaptador.
+
+### Acceptance criteria
+- [x] `FakeEventStream.subscribe` entrega apenas mensagens publicadas após a inscrição
+- [x] `REDIS_URL` vazio → `FakeEventStream`; `REDIS_URL` definido → `RedisEventStream` (sem
+  tocar a rede na construção)
+- [x] Watcher de revogação fecha o WS com `4002` via `subscribe` (fake)
+- [x] Teste de conformidade `redis_real` passa contra um Redis real (xadd/xrange/xrevrange/
+  xlen/set+ex/get/expire/delete/publish/subscribe)
+- [x] `MaterializationWorker` usa o cliente global por padrão (lê o mesmo stream do gateway)
+- [ ] Validado em staging com Redis gerenciado (ElastiCache) — 2.1
+
+### Blocked by
+- #3, #6
+
+---
+
+## 14) Pipeline STT no Servidor (tracer bullet sem providers gerenciados)
+Tipo: AFK
+
+### Context
+O `AudioGateway` enfileirava frames que ninguém consumia: depois de 50 frames (1 s) **todo**
+frame gerava `STT_OVERFLOW`, nenhum texto era produzido e o draft continha só metadados de
+frames. Deepgram/Whisper API dependem de DPA (#12); o componente precisava de um caminho
+real ponta a ponta para a integração com o app. Ver ADR 0002.
+
+### What to build
+- `AudioGateway.start_consumer(handler)` drena a fila; `record_transcript(...)` grava entradas
+  `type=transcript` (texto, confiança, `uncertain`, `speaker`, `seq_from/seq_to`,
+  `red_flags`) no mesmo stream da Sessão; entradas de frame ganham `type=frame`.
+- `SessionTranscriber`: segmenta por janela (`STT_WINDOW_S`) ou silêncio
+  (`STT_SILENCE_RMS`/`STT_SILENCE_MS`), descarta segmentos sem fala (sem chamar STT),
+  transcreve em task própria (fila do gateway nunca bloqueia), emite
+  `{"type":"transcript"}` e, em `medical` com `llm_realtime_red_flag`,
+  `{"type":"red_flag","terms":[...]}` usando `medical_rules.detect_red_flags`.
+- `STT_SERVER_BACKEND=off|fake|local_whisper` (`build_stt_service`);
+  `LocalWhisperBatchBackend` roda `FasterWhisperBackend.from_env()` em thread;
+  `BatchOnlyStreamingBackend` mantém circuit breaker/status com backend batch.
+- Materialização monta `transcript` (ordenado por `server_timestamp_ms`, `[incerto]` nos
+  segmentos `uncertain`), `red_flags` (medical) e `draft_generation`
+  (`transcript_only` | `disabled_by_kill_switch`); frames brutos **não** vão para o draft.
+- Todas as escritas no socket passam por uma outbox com um único sender task.
+
+### Acceptance criteria
+- [x] Janela cheia → exatamente uma chamada ao STT por segmento
+- [x] Segmento só com silêncio nunca chama o STT
+- [x] Evento final vira entrada `transcript` no stream e mensagem WS `transcript`
+- [x] `uncertain` propaga do limiar `STT_CONFIDENCE` para stream e WS
+- [x] `red_flag` emitido em tempo real quando habilitado; omitido quando não
+- [x] `build_stt_service`: `off` → `None`; `fake` → serviço; inválido → `ValueError`
+- [x] `LocalWhisperBatchBackend` executa fora do event loop e devolve `STTEvent`
+- [x] Draft contém `transcript.text` e `red_flags` (medical) e `event_count`; sem `events`
+- [x] Frame reenviado (mesmo `seq`/`speaker`) é deduplicado; `event_id` determinístico (uuid5)
+- [x] Ponta a ponta via TestClient com `STT_SERVER_BACKEND=fake`: frames → `transcript` no
+  WS → `close` → draft `ready` com o texto
+- [x] Segmento final é descarregado após desconexão abrupta
+- [ ] Sessão real com `STT_SERVER_BACKEND=local_whisper` e microfone do navegador (manual)
+
+### Blocked by
+- #3, #4, #13
+
+---
+
+## 15) Draft LLM: Extração de Campos da Anamnese e Confiança por Campo Real
+Tipo: AFK
+
+### Context
+O draft hoje é `transcript_only`: `fields` é vazio e o `field_confidence` (#8) não tem
+campos para classificar. O PRD exige draft de Prontuário com os 8 campos obrigatórios e
+cobertura ≥ 90% (DoD #8).
+
+### What to build
+- `DraftBuilder` que recebe `transcript.segments` e produz `fields{nome: {value,
+  field_confidence, uncertain_segments}}` via `LLMService` (`llm_prontuario_model` do plano;
+  prompt caching só do system prompt — nunca do contexto da Sessão em `medical`).
+- `field_confidence` = média ponderada da confiança dos segmentos citados pelo LLM;
+  segmentos `uncertain` entram em `uncertain_segments` com `[incerto]`.
+- Kill switch (#9) desliga a etapa LLM mantendo `transcript` (já implementado o contrato
+  `draft_generation`).
+- Bateria de crash em N=25 eventos (medical) comparando draft com ground truth
+  (perda > 5% dos campos bloqueia release).
+
+### Acceptance criteria
+- [ ] Draft `medical` tem os 8 campos de `medical_rules.REQUIRED_FIELDS`, vazios quando não
+  mencionados, nunca inventados
+- [ ] `DRAFT_FIELD_CONFIDENCE_ENABLED=1` classifica cada campo (`revisar|medio|alto`)
+- [ ] Cobertura ≥ 90% em Sessão simulada com os 8 campos (DoD #8 com draft real)
+- [ ] Kill switch ativo → `draft_generation=disabled_by_kill_switch`, `transcript` íntegro
+- [ ] Falha do LLM → retry 3× (backoff) → `failed` com `partial:true` e `transcript`
+
+### Blocked by
+- #14, #12 (DPA OpenAI/Anthropic)
+
+---
+
+## 16) Auto-finalize: Reaper de Sessão e Hard Cap do Plano
+Tipo: AFK
+
+### Context
+`auto_finalize_at` era apenas gravado; Sessão sem `/close` ficava aberta para sempre, com
+token válido e sem draft. O refresh de token renovava 60/240 min a cada chamada, permitindo
+Sessão infinita. Ver ADR 0007.
+
+### What to build
+- `SessionReaper` (lifespan, `SESSION_REAPER_INTERVAL_S`, `0` desliga) usando a mesma
+  transação do `/close` (`session_lifecycle.close_session_tx`): token revogado + pub/sub,
+  `EXPIRE` do stream, draft `pending`, AuditLog `session.auto_finalized`
+  (`actor_sub=system:reaper`), materialização agendada após commit.
+- `SystemSessionsRepository.list_expired_open` (única leitura cross-tenant sancionada);
+  releitura `FOR UPDATE` por tenant → idempotente com vários containers.
+- `POST /token/refresh`: `409 SESSION_ALREADY_CLOSED` em Sessão fechada; TTL =
+  `min(created_at + session_max_minutes, auto_finalize_at) − now`; `409
+  SESSION_HARD_CAP_REACHED` quando ≤ 0. Respostas carregam `ws_token_expires_at`.
+
+### Acceptance criteria
+- [x] Sessão vencida é fechada: status `closed`, draft `ready`, token apagado, `revoke:`
+  publicado, TTL do stream = 86400
+- [x] AuditLog registra `session.auto_finalized` com `actor_sub=system:reaper`; cadeia ok
+- [x] Sessão dentro do prazo não é tocada; segunda execução é no-op
+- [x] `SESSION_REAPER_INTERVAL_S=0` desliga o reaper
+- [x] Refresh em Sessão fechada → 409; além do hard cap → 409 `SESSION_HARD_CAP_REACHED`
+- [x] Refresh aos 50 min de um plano de 60 min emite token com TTL ≤ 10 min
+- [ ] Warning a 30 min de silêncio (`{"type":"status","reason":"silence_warning"}`)
+
+### Blocked by
+- #5, #6
+
+---
+
+## 17) Observabilidade Real: `/metrics` Prometheus, OTel SDK, structlog
+Tipo: AFK
+
+### Context
+As métricas da #7/#9 eram stubs em memória sem endpoint de scrape; OTel e structlog eram
+mocks. DoD #9 exige métricas "visíveis no Prometheus".
+
+### What to build
+- `prometheus_client` com `CollectorRegistry` dedicado; stubs `_SimpleGauge/_SimpleHistogram/
+  _SimpleCounter` mantêm a API dos testes e espelham no registry; **toda** métrica com label
+  `tenant_id`. Novas: `events_late_arrival_ratio`, `sessions_active`, `stt_fallback_total
+  {reason}`, `stt_segment_duration_ms`, `audit_events_total{event_type}`.
+- `GET /metrics` (fora de `/v1`, sem Bearer — expor só na rede interna); `/health` informa
+  `event_stream` e `stt_backend`.
+- Pendente: OTel SDK real (traces W3C navegador → gateway → STT → LLM), structlog JSON com
+  `correlation_id/session_id/tenant_id`, alerta a 70% do teto de provider.
+
+### Acceptance criteria
+- [x] `GET /metrics` responde 200 no formato de exposição com `stt_circuit_state` e
+  `draft_kill_switch_active`
+- [x] Toda amostra com labels carrega `tenant_id`
+- [x] Stubs espelham no registry (`set/observe/inc`) e rejeitam `tenant_id` vazio
+- [ ] Traces OTel reais exportados (OTLP) com `session_id` e `correlation_id`
+- [ ] Logs JSON (structlog) com `correlation_id`, `session_id`, `tenant_id`, `actor_role`
+- [ ] Regra de alerta Prometheus `deepgram_concurrent_sessions / max > 0.70` versionada
+
+### Blocked by
+- #9
+
+---
+
+## 18) Hardening de Contratos da Fase 2.0 (lote de bugs da revisão)
+Tipo: AFK
+
+### Context
+Revisão completa do servidor encontrou bugs que invalidavam garantias já marcadas como
+feitas. Cada item abaixo tem teste em `tests/fase2/test_issue018_hardening.py`. Decisões:
+ADR 0004 (AuditLog) e ADR 0006 (WS auth).
+
+### What to build
+1. **WS auth**: `ws_token` vinculado a `session_id`/`tenant_id` do registro no Redis (antes:
+   qualquer token válido abria qualquer Sessão); tenant por query/header/default (browsers
+   não enviam headers); header `x-session-id` do accept em formato ASGI (bytes); conexão
+   não segura mais uma conexão Postgres pela vida inteira do socket; frame inválido vira
+   `{"type":"error","reason":"FRAME_INVALID"}` sem derrubar o socket; `ping/pong`.
+2. **Idempotência sob concorrência**: `INSERT … ON CONFLICT` reconhecido como perda de corrida
+   → rollback da Sessão perdedora e replay da vencedora (antes: duas Sessões para a mesma
+   chave).
+3. **Dependência de banco com `scope="function"`** (FastAPI ≥ 0.121 exita o `yield` padrão
+   após a resposta e as BackgroundTasks → o worker de materialização nunca via o draft).
+4. **`POST /close`** aplica `EXPIRE 86400` no stream (antes: vazamento no Redis) e usa
+   `FOR UPDATE`; **`POST /draft/retry`** reagenda a materialização (antes: pending eterno).
+5. **AuditLog** ligado aos routers e ao worker; hash sobre o registro completo; ordem por
+   `seq`; lock por tenant; detecção de gap; trigger append-only; sem FK para `sessions`
+   (migration `0006`).
+6. **JWKS**: `kid` desconhecido após refresh → 401 (antes 503); `kid` ausente → 401 sem
+   refetch; refresh-on-miss limitado a 1 a cada 5 s.
+7. **Feedback**: `actor_sub` cai para o `sub` do JWT (antes: balde vazio compartilhado que
+   podia acionar o kill switch entre médicos); `correction_ratio` vira `FLOAT`
+   (antes: `NUMERIC(5,4)` estourava com ratio > 9,9999 → 500).
+8. **Contrato**: perfis interviewer exigem `seniority`; `ws_token_expires_at` nas respostas;
+   `APP_ENV=production|staging` sem `JWT_JWKS_URL` impede o boot
+   (`CONFIG_AUTH_BYPASS_FORBIDDEN`).
+9. **Drain**: após drenar, o handler de SIGTERM repassa ao handler anterior (uvicorn) para o
+   processo sair (antes: só o stop timeout do ECS encerrava).
+10. **Settings** cacheadas por processo (`reset_settings_cache()` em testes).
+
+### Acceptance criteria
+- [x] ws_token de uma Sessão não abre o WS de outra (4001)
+- [x] WS sem `X-Tenant-Id` conecta com o tenant default; `x-session-id` em bytes
+- [x] Frame inválido → `FRAME_INVALID`; socket segue aberto
+- [x] Dois POST concorrentes com a mesma `Idempotency-Key` → mesma Sessão; uma única linha
+- [x] `POST /close` → TTL 86400 no stream; cadeia de auditoria `created → closed → exported` ok
+- [x] Gap na cadeia detectado (`reason=link`); dois eventos na mesma transação mantêm ordem
+- [x] `UPDATE`/`DELETE` em `audit_log` bloqueados pela trigger
+- [x] Refresh em Sessão fechada → 409; além do hard cap → 409
+- [x] `POST /draft/retry` deixa o draft `ready`
+- [x] `kid` desconhecido → 401; `kid` ausente → 401 sem fetch; refresh-on-miss limitado
+- [x] Feedback sem `actor_sub` usa o `sub` do JWT; ratio 500.0 aceito
+- [x] Interviewer sem `seniority` → 400 `SESSION_INVALID_SENIORITY`
+- [x] `APP_ENV=production` sem JWKS → boot recusado
+- [x] Migration `0006` com `downgrade()` não trivial
+- [ ] SIGTERM em container Linux encerra o processo após o drain (validar em staging)
+
+### Blocked by
+- #1–#12
+
+---
+
+## 19) Backends Gerenciados: Deepgram Nova-2 Streaming e Whisper API Batch
+Tipo: HITL
+
+### Context
+`STTStreamService` tem o contrato pronto (`StreamingSTTBackend`/`BatchSTTBackend`), circuit
+breaker e eventos de status; faltam os adaptadores reais, que dependem de credenciais e do DPA
+(#12). Latência por bloco ≤ 15 s e WER ≤ 10% só são mensuráveis com eles.
+
+### What to build
+- `DeepgramStreamingBackend` (WebSocket Nova-2 pt-BR, endpointing configurável por perfil,
+  `health_check` por handshake sem áudio) e `WhisperAPIBatchBackend` (OpenAI).
+- `STT_SERVER_BACKEND=deepgram` seleciona Deepgram + Whisper API como fallback; `local_whisper`
+  continua como fallback opcional on-prem.
+- Bateria de 50 frases clínicas (WER) e bateria RED_FLAG rodando contra o backend real
+  (gate pré-go-live, Issue #11 itens 7/WER/RED_FLAG).
+
+### Acceptance criteria
+- [ ] 3 timeouts reais > 800 ms abrem o circuit breaker e a Sessão continua em batch
+- [ ] WER ≤ 10% nas 50 frases clínicas pt-BR com Deepgram Nova-2
+- [ ] RED_FLAG detectado em 100% da bateria (Deepgram + Whisper local)
+- [ ] p95 ≤ 15 s por bloco de 10 s em 20 execuções
+- [ ] Chaves fora do repositório (Secrets Manager); DPA Deepgram/OpenAI assinados antes de
+  dados reais
+
+### Blocked by
+- #12, #14
+
+---
+
+## 20) Guardrails de CI: sqlfluff, RLS Shadow em Staging e Lint de Repositórios
+Tipo: AFK
+
+### Context
+A #10 cobre o lint por AST nos testes; faltam o `sqlfluff` com regra custom, o shadow mode de
+RLS em staging (`pgaudit`) e um check de que todo router usa `DbSession` (scope function).
+
+### Acceptance criteria
+- [ ] `.sqlfluff` com regra bloqueando `SELECT/UPDATE/DELETE` sem `tenant_id` fora de
+  `repositories/`, executado em CI
+- [ ] Staging com `FORCE ROW LEVEL SECURITY` + `pgaudit` log-only; query escapada bloqueia
+  release
+- [ ] Lint: nenhum handler injeta `Depends(get_db_session)` sem `scope="function"`
+- [ ] CI roda `alembic upgrade head && downgrade base && upgrade head` em Postgres limpo
+
+### Blocked by
+- #10
+
+---
+
+## 21) Kill Switch e JTI Cache Compartilhados (Redis) + Reset Administrativo
+Tipo: AFK
+
+### Context
+`DraftKillSwitch` e `JTICache` são por processo: com N containers o kill switch não dispara
+de forma consistente e um `jti` pode ser reaproveitado em outro container. O kill switch
+automático nunca desativa (não há reset).
+
+### Acceptance criteria
+- [ ] Kill switch lido/escrito em Redis (`{tenant_id}` hash tag) com flag manual
+  `DRAFT_GENERATION_ENABLED` e automático por `actor_sub`
+- [ ] Endpoint administrativo (ou CLI) para reset com evento de auditoria
+- [ ] `jti` visto em um container é rejeitado em outro (Redis `SET NX EX 900`)
+- [ ] `draft_kill_switch_active` reflete o estado compartilhado em todas as instâncias
+
+### Blocked by
+- #13
+
+---
+
+## 22) Codec Opus Real e Negociação de Formato no WS
+Tipo: AFK
+
+### Context
+`PassthroughDecoder` trata o payload como PCM16 LE @ 16 kHz; o PRD fixa Opus 20 ms. Enquanto
+`opuslib` não entra, o app precisa enviar PCM16 — isso deve ser explícito no contrato.
+
+### Acceptance criteria
+- [ ] Query `codec=pcm16|opus` no handshake; `opus` exige `opuslib` instalado (senão 1008)
+- [ ] Decoder Opus → PCM16 320 amostras/20 ms com teste de round-trip
+- [ ] Frames com tamanho inconsistente com o codec → `FRAME_INVALID`
+- [ ] Metadata de frames sai do stream principal para uma chave compacta de `seq`
+  (`xrange` do draft não varre 180k entradas por hora de Sessão)
+
+### Blocked by
+- #14

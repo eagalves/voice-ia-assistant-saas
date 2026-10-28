@@ -907,3 +907,41 @@ Qualquer integracao futura que use `AudioCapture` + `STTService` diretamente (se
 - `STTService.transcribe(audio_48khz)` sem `sample_rate` deve emitir `WARNING` indicando taxa desconhecida.
 - `WhisperBackend` stub deve ser compativel com a nova assinatura.
 - Testes existentes de `STTService` nao devem regredir.
+
+## Issue 31 - Correcoes de Robustez no Nucleo (revisao de 2026-10-27)
+
+**Type:** AFK  
+**Blocked by:** None - can start immediately  
+**User stories covered:** 9, 12, 16, 17
+
+## What to build
+Lote de correcoes encontradas na revisao completa do codigo, todas no nucleo preservado pela
+ADR 0001 (sem quebra de contrato):
+- `medical_rules`: deteccao de sinais de alerta insensivel a acentos e por palavra inteira
+  ("convulsão", "ideação suicida" passavam batidos; "ardor" disparava "dor"); termos da
+  bateria do PRD (`dor toracica`, `perda de consciencia`, `sincope`); funcao publica
+  `detect_red_flags` reutilizada pelo servidor da Fase 2.
+- `orchestrator`: repassa `sample_rate` do segmento ao STT (microfone a 44.1/48 kHz era
+  tratado como 16 kHz — gotcha documentado no CLAUDE.md, mas nao aplicado no proprio
+  orquestrador).
+- `llm.LLMService.stream`: retry com backoff apenas em `LLM_ERR_UNAVAILABLE` e apenas antes
+  do primeiro token (mesma politica do `complete`); apos o primeiro token a falha propaga.
+- `stt.from_env`: `STT_CONFIDENCE`/`STT_MAX_RETRIES`/`WHISPER_*` invalidos geram warning e
+  default (0.55 / 1) em vez de derrubar o boot; `FasterWhisperBackend.from_env()` centraliza
+  os knobs `WHISPER_*` usados pelo Voice CLI e pelo servidor.
+- `stt_correction`: edicoes respeitam limite de palavra (`dor`→`dose` nao reescreve "ardor").
+
+## Acceptance criteria
+- [x] Given texto com "convulsão"/"ideação suicida", When detectar red flags, Then os termos
+  canonicos sao retornados.
+- [x] Given "ardor no estômago", When detectar red flags, Then nenhum termo e retornado.
+- [x] Given segmento capturado a 48 kHz, When o orquestrador processa, Then o STT recebe
+  `sample_rate=48000`.
+- [x] Given backend que falha com erro tecnico antes do primeiro token, When `stream`, Then ha
+  retry ate `LLM_RETRIES`; erro logico nao e retentado; falha apos token propaga.
+- [x] Given `STT_CONFIDENCE=high`, When `STTService.from_env`, Then limiar 0.55 com warning.
+- [x] Given edicao `dor`→`dose` em "sente ardor e dor aqui", When corrigir, Then apenas a
+  palavra inteira muda.
+
+## Riscos tecnicos
+- Lista de red flags e versionada em codigo; mudancas clinicas exigem revisao do Med Lead.

@@ -753,3 +753,41 @@ Política para "escalar fácil" sem reescrever:
 5. DPA preliminar com Deepgram, OpenAI, Anthropic — começar negociação imediatamente (lead time ≥ 60 dias).
 6. Template de DPIA do componente em `docs/compliance/dpia-componente.md` rascunhado.
 7. Template de DPA interno entre o app de telemedicina e o componente assistente em `docs/compliance/dpa-internal.md` (mesmo sendo a mesma empresa, formaliza relação Controlador/Operador — reusa template para Fase 3).
+
+
+## Aditivo — Estado implementado da Fase 2.0 (revisão de 2026-10-27)
+
+Fluxo real do servidor após a revisão (tudo sem provider gerenciado; ver ADRs 0002–0007):
+
+```
+app (browser)                      assistente_de_voz (FastAPI)
+  POST /v1/sessions ───────────▶  sessions router ─ SessionsRepository ─▶ Postgres
+                                   │ ws_token {session_id, tenant_id, expires_at} ─▶ Redis
+                                   │ AuditLog session.created
+  WS /v1/sessions/{id}/audio ───▶  audio router: token ⇔ sessão/tenant, sessão aberta?
+   frames {seq, data(PCM16)}       │ AudioGateway (dedupe seq/speaker, late-arrival, snapshot)
+                                   │   └─ consumer ─▶ SessionTranscriber (janela/silêncio)
+                                   │        └─ STTStreamService (circuit breaker)
+                                   │             ├─ fake | local_whisper (CPU, thread)
+                                   │             └─ Deepgram/Whisper API (Issue #19)
+   ◀── transcript / red_flag ──    │ outbox (um sender task) ◀─ status/drain/token_expiring_in
+                                   │ XADD type=frame|transcript ─▶ Redis Stream {tenant:session}
+  POST /close ───────────────────▶ session_lifecycle.close_session_tx (também usado pelo reaper)
+                                   │ revoke token + pub/sub, EXPIRE stream, draft pending,
+                                   │ AuditLog session.closed → BackgroundTask MaterializationWorker
+  GET /draft ────────────────────▶ 202 pending | 200 ready {transcript, red_flags, fields{}} | 500 failed
+```
+
+Módulos novos nesta revisão: `server/session_lifecycle.py`, `server/transcriber.py`,
+`server/reaper.py`; `server/event_stream.RedisEventStream`; `server/metrics.render_metrics`
+(`/metrics`). Migration `0006` (AuditLog `seq` + trigger append-only + `draft_feedback.
+correction_ratio FLOAT`).
+
+Invariantes acrescentados:
+
+- Toda dependência de banco em router é `DbSession` (`scope="function"`): o commit precede a
+  resposta e as BackgroundTasks.
+- Toda escrita no WebSocket passa pela outbox da conexão; nenhuma task escreve no socket
+  diretamente (exceto `close` por revogação).
+- `close_session_tx` é a única transição `open → closed` (router e reaper).
+- O draft nunca copia entradas de frame do stream; só `transcript` entra no conteúdo.

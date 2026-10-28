@@ -38,3 +38,6 @@ Thumbs.db
 # Logs
 *.log
 .issue10_holdback/
+
+# Evidencias geradas pelo gate DoD 2.0 (docs/gate/README.md)
+docs/gate/dod20_evidence_*.json

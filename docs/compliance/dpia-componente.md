@@ -85,6 +85,10 @@ integridade da cadeia sem rastro na própria tabela.
     UPDATE direto em `audit_log`).  
 (c) Export diário de checkpoints do hash chain para S3 imutável programado para a versão
     2.1 — até lá o risco residual é aceito formalmente abaixo.
+(d) Desde a migration `0006` (2026-10-27): trigger `trg_audit_log_append_only` bloqueia
+    `UPDATE`/`DELETE` em `audit_log`; `verify_chain` detecta linha alterada (`hash`) e linha
+    removida/inserida (`link`); hash cobre `event_type`, `session_id`, `actor_sub` e `payload`
+    (ADR 0004). Reescrever exige desabilitar a trigger — ação privilegiada registrada em (b).
 
 > **Este risco residual deve ser formalmente aceito e assinado antes do primeiro paciente real.**
 
