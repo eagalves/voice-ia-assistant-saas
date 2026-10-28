@@ -31,11 +31,25 @@ async def _create_and_close(
     return sid
 
 
+async def _force_status(db_engine: AsyncEngine, sid: str, status: str) -> None:
+    """The materialization worker runs as a BackgroundTask and finishes before
+    the HTTP response is returned, so drafts are ``ready`` right after close.
+    Tests that need another state set it explicitly."""
+    sm = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with sm() as db:
+        repo = DraftsRepository(db, DEFAULT_TENANT_ID)
+        draft = await repo.get_by_session(uuid.UUID(sid))
+        assert draft is not None
+        await repo.force_status(draft, status=status)
+        await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_get_draft_pending_returns_202_with_retry_after(
-    client: AsyncClient, auth_headers: dict[str, str]
+    client: AsyncClient, auth_headers: dict[str, str], db_engine: AsyncEngine
 ) -> None:
     sid = await _create_and_close(client, auth_headers)
+    await _force_status(db_engine, sid, "pending")
     resp = await client.get(f"/v1/sessions/{sid}/draft", headers=auth_headers)
     assert resp.status_code == 202
     assert resp.headers.get("Retry-After") == "5"
@@ -120,6 +134,7 @@ async def test_draft_retry_resets_failed_to_pending(
     )
     assert resp.status_code == 202
     assert resp.json()["draft_status"] == "pending"
+    assert resp.json()["retry_count"] == 1
 
     async with sm() as db:
         row = (
@@ -127,8 +142,11 @@ async def test_draft_retry_resets_failed_to_pending(
                 select(Draft).where(Draft.session_id == uuid.UUID(sid))
             )
         ).scalar_one()
-        assert row.draft_status == "pending"
+        # retry resets to pending AND reschedules the worker, which completes
+        # before the response (BackgroundTask) → ready with no error left.
+        assert row.draft_status == "ready"
         assert row.last_error is None
+        assert row.retry_count == 1
 
 
 @pytest.mark.asyncio

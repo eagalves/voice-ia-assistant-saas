@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from fastapi import HTTPException
 
 from .config import ServerSettings, get_settings
 from .db.session import get_sessionmaker
@@ -13,6 +12,15 @@ from .drain import get_drain_manager
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
+    """Request-scoped ``AsyncSession``; commits on success, rolls back on error.
+
+    MUST be injected with ``scope="function"`` (see ``DbSession``). Since
+    FastAPI 0.121 a yield dependency defaults to ``scope="request"``, whose
+    exit code runs *after* the response is sent — and after BackgroundTasks.
+    With the default scope the draft materialization worker scheduled by
+    ``POST /close`` ran before this commit and never found the draft row.
+    ``scope="function"`` exits (commits) right after the handler returns.
+    """
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         try:
@@ -21,6 +29,10 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+DbSession = Annotated[AsyncSession, Depends(get_db_session, scope="function")]
+"""Handler parameter type: ``db: DbSession`` — committed before the response."""
 
 
 def get_app_settings() -> ServerSettings:

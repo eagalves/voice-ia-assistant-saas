@@ -8,6 +8,8 @@ Invariants:
   INSERT so the UNIQUE constraint never blocks a logically-new request.
 - INSERT uses ON CONFLICT DO NOTHING; a follow-up SELECT fetches the
   canonical record (either freshly inserted or the winner of a race).
+  Callers compare the returned record with what they tried to store to
+  detect a lost race (see ``routers/sessions.py``).
 - ``canonical_hash`` is a module-level helper exported for use in tests
   and the router; it is the only authoritative definition of
   SHA-256(json.dumps(sort_keys=True, ensure_ascii=False)).
@@ -55,13 +57,13 @@ class IdempotencyRepository(TenantRepository):
     ) -> IdempotencyKey | None:
         """Return the existing non-expired record, or None."""
         now = datetime.now(timezone.utc)
-        stmt = (
+        stmt = self._scope_tenant(
             select(IdempotencyKey)
-            .where(IdempotencyKey.tenant_id == self.tenant_id)
             .where(IdempotencyKey.endpoint == endpoint)
             .where(IdempotencyKey.actor_sub_jwt == actor_sub_jwt)
             .where(IdempotencyKey.idempotency_key == idempotency_key)
-            .where(IdempotencyKey.expires_at > now)
+            .where(IdempotencyKey.expires_at > now),
+            IdempotencyKey,
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
@@ -80,7 +82,9 @@ class IdempotencyRepository(TenantRepository):
         Steps:
         1. Purge any expired row for this exact (tenant, endpoint, actor, key)
            so the UNIQUE constraint doesn't block a logically-new request.
-        2. INSERT … ON CONFLICT DO NOTHING (handles concurrent first-writes).
+        2. INSERT … ON CONFLICT DO NOTHING (handles concurrent first-writes:
+           the second writer blocks on the unique index until the first
+           commits, then its INSERT is a no-op).
         3. Flush and SELECT to get the canonical record.
 
         Returns None only in the pathological case where a concurrent writer
@@ -91,13 +95,13 @@ class IdempotencyRepository(TenantRepository):
         expires_at = now + timedelta(hours=TTL_HOURS)
 
         # Step 1: purge expired record for this exact combination.
-        del_stmt = (
+        del_stmt = self._scope_tenant(
             delete(IdempotencyKey)
-            .where(IdempotencyKey.tenant_id == self.tenant_id)
             .where(IdempotencyKey.endpoint == endpoint)
             .where(IdempotencyKey.actor_sub_jwt == actor_sub_jwt)
             .where(IdempotencyKey.idempotency_key == idempotency_key)
-            .where(IdempotencyKey.expires_at <= now)
+            .where(IdempotencyKey.expires_at <= now),
+            IdempotencyKey,
         )
         await self.db.execute(del_stmt)
 

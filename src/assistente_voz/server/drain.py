@@ -2,7 +2,9 @@
 
 SIGTERM → broadcast {"type":"drain","reconnect_in":30} to all active WS
 connections → mark server as draining (POST /v1/sessions returns 503) →
-wait up to DRAIN_MAX_WAIT_S for in-flight work to finish.
+wait up to DRAIN_MAX_WAIT_S for in-flight work to finish → hand the signal
+over to the server's own handler (uvicorn's ``handle_exit``) so the process
+actually stops instead of waiting for the ECS stop timeout.
 
 ``ECS_CONTAINER_STOP_TIMEOUT`` must be set to 120s on the task definition
 so the 90s drain window is not truncated by ECS's default 30s.
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from collections.abc import Awaitable, Callable
 
@@ -80,8 +83,9 @@ class DrainManager:
         Call after ``drain()`` in the SIGTERM handler.  WS handlers must
         call ``unregister()`` on disconnect so this can detect completion.
         """
-        deadline = asyncio.get_event_loop().time() + DRAIN_MAX_WAIT_S
-        while self._connections and asyncio.get_event_loop().time() < deadline:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DRAIN_MAX_WAIT_S
+        while self._connections and loop.time() < deadline:
             await asyncio.sleep(0.1)
 
         if self._connections:
@@ -91,7 +95,13 @@ class DrainManager:
             )
 
     def install_sigterm_handler(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Install SIGTERM → drain() on the event loop.
+        """Install SIGTERM → drain() → previous handler on the event loop.
+
+        ``loop.add_signal_handler`` *replaces* whatever handler uvicorn
+        installed, so after draining we invoke the previous handler
+        (uvicorn's ``handle_exit`` sets ``should_exit``). If there was no
+        previous Python handler, the default action is restored and the
+        signal re-sent so the process terminates.
 
         No-op on Windows (add_signal_handler not supported).
         """
@@ -100,9 +110,19 @@ class DrainManager:
         try:
             import signal
 
+            previous = signal.getsignal(signal.SIGTERM)
+
             async def _sigterm_handler() -> None:
                 await self.drain()
                 await self.wait_for_drain()
+                if callable(previous):
+                    try:
+                        previous(signal.SIGTERM, None)
+                        return
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("Previous SIGTERM handler failed: %s", exc)
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                os.kill(os.getpid(), signal.SIGTERM)
 
             loop.add_signal_handler(
                 signal.SIGTERM,

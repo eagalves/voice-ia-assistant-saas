@@ -113,7 +113,9 @@ async def test_ac1_close_inserts_pending_draft(
         draft = await repo.get_by_session(uuid.UUID(sid))
 
     assert draft is not None
-    assert draft.draft_status == "pending"
+    # Inserted as pending by /close; the BackgroundTask worker materializes it
+    # before the HTTP response is returned (Issue #18: DbSession scope=function).
+    assert draft.draft_status in ("pending", "ready")
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +299,18 @@ async def test_ac5_three_failures_mark_failed_and_log_error(
 async def test_ac6_get_draft_202_when_pending(
     client: AsyncClient,
     auth_headers: dict,
+    db_engine: AsyncEngine,
 ) -> None:
     sid = await _create_and_close(client, auth_headers)
+    # Worker already materialized the draft (BackgroundTask); put it back to
+    # pending to exercise the 202 + Retry-After contract.
+    sm = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with sm() as db:
+        async with db.begin():
+            repo = DraftsRepository(db, DEFAULT_TENANT_ID)
+            draft = await repo.get_by_session(uuid.UUID(sid))
+            assert draft is not None
+            await repo.force_status(draft, status="pending")
     resp = await client.get(f"/v1/sessions/{sid}/draft", headers=auth_headers)
     assert resp.status_code == 202
     assert resp.headers.get("Retry-After") == "5"

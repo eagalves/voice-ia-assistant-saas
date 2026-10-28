@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 
 from sqlalchemy import select
 
@@ -27,7 +26,7 @@ class FeedbackRepository(TenantRepository):
             session_id=session_id,
             chars_original=chars_original,
             chars_edited=chars_edited,
-            correction_ratio=Decimal(str(round(correction_ratio, 4))),
+            correction_ratio=round(float(correction_ratio), 6),
             fields_corrected=fields_corrected,
             session_kind=session_kind,
             actor_sub=actor_sub,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import (
@@ -51,14 +50,3 @@ async def reset_engine() -> None:
         await _engine.dispose()
     _engine = None
     _sessionmaker = None
-
-
-async def get_db() -> AsyncIterator[AsyncSession]:
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise

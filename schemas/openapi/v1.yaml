@@ -86,6 +86,10 @@ components:
           format: uuid
           title: Ws Token
           type: string
+        ws_token_expires_at:
+          format: date-time
+          title: Ws Token Expires At
+          type: string
         ws_url:
           title: Ws Url
           type: string
@@ -93,6 +97,7 @@ components:
       - session_id
       - ws_url
       - ws_token
+      - ws_token_expires_at
       - session_kind
       - plan_features
       - auto_finalize_at
@@ -296,9 +301,14 @@ components:
           format: uuid
           title: Ws Token
           type: string
+        ws_token_expires_at:
+          format: date-time
+          title: Ws Token Expires At
+          type: string
       required:
       - session_id
       - ws_token
+      - ws_token_expires_at
       - issued_at
       title: TokenRefreshOut
       type: object
@@ -499,14 +509,16 @@ paths:
       - drafts
   /v1/sessions/{session_id}/token/refresh:
     post:
-      description: 'Issue #1 stub.
+      description: 'Issue a fresh ``ws_token`` for an open Sessão (Issue #6).
 
 
-        Returns a fresh `ws_token` and persists it on the row, but does NOT
+        Invalidates the previous token atomically in Redis (DEL old + SET new)
 
-        invalidate the old token in Redis (Issue #6) nor publish a revocation
+        without closing the active WS; the app hands the new token to the
 
-        event. The current WS connection (if any) is unaffected.'
+        browser through its own channel. The new TTL never extends the Sessão
+
+        past its hard cap (plan ``session_max_minutes`` / auto-finalize).'
       operationId: refresh_ws_token_v1_sessions__session_id__token_refresh_post
       parameters:
       - in: path

@@ -16,7 +16,7 @@ Error codes (all map to HTTP 401 unless noted):
 - AUTH_ISS_NOT_ALLOWED
 - AUTH_JWT_WINDOW_EXCEEDED
 - AUTH_JTI_REPLAY
-- AUTH_JWT_INVALID   (catch-all for expired, bad signature, etc.)
+- AUTH_JWT_INVALID   (catch-all: expired, bad signature, missing/unknown kid)
 - AUTH_JWKS_UNAVAILABLE → 503 (raised as JWKSUnavailableError, handled by middleware)
 """
 from __future__ import annotations
@@ -27,14 +27,25 @@ from collections.abc import Callable
 import jwt
 
 from .jti_cache import JTICache
-from .jwks_cache import JWKSCache, JWKSUnavailableError
+from .jwks_cache import JWKSCache, JWKSKeyNotFoundError, JWKSUnavailableError
 
 ALLOWED_ALGORITHMS: frozenset[str] = frozenset({"RS256", "ES256"})
 FIXED_AUDIENCE: str = "urn:assistente-voz:fase2"
 MAX_WINDOW_S: int = 900   # 15 min
 CLOCK_SKEW_S: int = 60    # ±1 min
 
-REQUIRED_CLAIMS = ("iss", "sub", "jti", "exp", "iat")
+REQUIRED_CLAIMS: tuple[str, ...] = ("iss", "sub", "jti", "exp", "iat", "nbf", "aud")
+
+__all__ = [
+    "ALLOWED_ALGORITHMS",
+    "AuthError",
+    "CLOCK_SKEW_S",
+    "FIXED_AUDIENCE",
+    "JWKSUnavailableError",
+    "JWTValidator",
+    "MAX_WINDOW_S",
+    "REQUIRED_CLAIMS",
+]
 
 
 class AuthError(Exception):
@@ -82,10 +93,17 @@ class JWTValidator:
                 f"Algorithm '{alg}' is not allowed. Use RS256 or ES256.",
             )
 
-        kid = header.get("kid", "")
+        kid = str(header.get("kid") or "")
+        if not kid:
+            raise AuthError("AUTH_JWT_INVALID", "JWT header must carry a 'kid'.")
 
         # 2. Fetch public key via JWKS cache (may raise JWKSUnavailableError → 503).
-        jwk = await self._jwks.get_key(kid)
+        try:
+            jwk = await self._jwks.get_key(kid)
+        except JWKSKeyNotFoundError as exc:
+            raise AuthError(
+                "AUTH_JWT_INVALID", f"Unknown signing key kid={kid!r}."
+            ) from exc
 
         # 3. Decode and verify signature + standard claims.
         try:
@@ -95,9 +113,7 @@ class JWTValidator:
                 algorithms=[alg],
                 audience=FIXED_AUDIENCE,
                 leeway=CLOCK_SKEW_S,
-                options={
-                    "require": ["iss", "sub", "jti", "exp", "iat", "nbf", "aud"],
-                },
+                options={"require": list(REQUIRED_CLAIMS)},
             )
         except jwt.exceptions.MissingRequiredClaimError as exc:
             raise AuthError(
@@ -131,7 +147,7 @@ class JWTValidator:
             )
 
         # 6. Anti-replay jti check.
-        jti: str = payload.get("jti", "")
+        jti: str = str(payload.get("jti") or "")
         if not jti:
             raise AuthError("AUTH_CLAIM_MISSING", "Claim 'jti' is required.")
 

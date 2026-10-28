@@ -5,11 +5,13 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
+    Identity,
     Integer,
-    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -122,7 +124,10 @@ class DraftFeedback(Base):
     )
     chars_original: Mapped[int] = mapped_column(Integer, nullable=False)
     chars_edited: Mapped[int] = mapped_column(Integer, nullable=False)
-    correction_ratio: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    # FLOAT (double precision) per ISSUES_FASE2 #9 — the previous NUMERIC(5,4)
+    # overflowed (500 error) when the physician added more text than the draft
+    # had (ratio > 9.9999). Migration 0006 widened the column.
+    correction_ratio: Mapped[float] = mapped_column(Float, nullable=False)
     fields_corrected: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, server_default="{}"
     )
@@ -173,11 +178,20 @@ class IdempotencyKey(Base):
 class AuditLog(Base):
     """Append-only audit log with SHA-256 hash chain.
 
-    Each event's ``event_hash`` = SHA-256(json(payload) + prev_hash).
-    The first event in a tenant's chain uses ``GENESIS_HASH`` ("0" * 64)
-    as ``prev_hash``. Tampering with any event breaks the chain.
+    Chain order is the server-assigned ``seq`` (identity column), never
+    ``created_at`` — ``now()`` is the *transaction* start time in Postgres,
+    so two events written in one transaction share a timestamp.
 
-    Issue #12 — HITL Compliance.
+    ``event_hash`` covers the whole record (``event_type``, ``session_id``,
+    ``actor_sub`` and ``payload``) plus ``prev_hash``; see ``audit_log.py``.
+    The first event in a tenant's chain uses ``GENESIS_HASH`` ("0" * 64).
+
+    ``session_id`` is intentionally *not* a foreign key: audit events are
+    retained for 5 years, sessions for 6–12 months, and an ``ON DELETE SET
+    NULL`` would require an UPDATE on a table protected by the append-only
+    trigger (migration 0006).
+
+    Issue #12 — HITL Compliance; ADR 0004.
     """
 
     __tablename__ = "audit_log"
@@ -185,12 +199,13 @@ class AuditLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    seq: Mapped[int] = mapped_column(
+        BigInteger, Identity(always=False), nullable=False, unique=True
+    )
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     session_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("sessions.id", ondelete="SET NULL"),
-        nullable=True,
+        UUID(as_uuid=True), nullable=True
     )
     actor_sub: Mapped[str | None] = mapped_column(String(128), nullable=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

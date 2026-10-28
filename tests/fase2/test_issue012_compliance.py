@@ -2,7 +2,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from assistente_voz.server.audit_log import GENESIS_HASH, log_event, verify_chain
 from assistente_voz.server.db.models import AuditLog
@@ -52,7 +52,17 @@ async def test_ac2_tamper_detected(db_session):
         .limit(1)
     )
     first = (await db_session.execute(stmt)).scalar_one()
+    # A privileged DBA bypassing the append-only trigger (migration 0006):
+    # the only way to rewrite audit_log — and exactly what the hash chain
+    # must still detect afterwards.
+    await db_session.execute(
+        text("ALTER TABLE audit_log DISABLE TRIGGER trg_audit_log_append_only")
+    )
     first.payload = {"step": 99, "TAMPERED": True}
+    await db_session.commit()
+    await db_session.execute(
+        text("ALTER TABLE audit_log ENABLE TRIGGER trg_audit_log_append_only")
+    )
     await db_session.commit()
     chain = await verify_chain(db_session, tenant_id)
     assert chain["ok"] is False

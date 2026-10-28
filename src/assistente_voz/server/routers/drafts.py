@@ -3,13 +3,18 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Path, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...errors import ApiError
+from ..audit_log import (
+    EVENT_DRAFT_EXPORTED,
+    EVENT_DRAFT_FEEDBACK_RECEIVED,
+    EVENT_DRAFT_RETRY_REQUESTED,
+    log_event,
+)
 from ..context import SessionContext
-from ..deps import get_db_session, get_tenant_id
+from ..deps import DbSession, get_actor_sub, get_tenant_id
 from ..kill_switch import get_kill_switch
 from ..metrics import draft_correction_ratio_histogram, draft_kill_switch_gauge
 from ..repositories.drafts_repo import DraftsRepository
@@ -23,6 +28,8 @@ from ..schemas.drafts import (
     DraftReadyOut,
     DraftRetryOut,
 )
+from ..session_lifecycle import materialization_worker_for
+from ..stream_client import get_stream_client
 from ..tracing import get_tracer
 
 router = APIRouter(prefix="/v1/sessions", tags=["drafts"])
@@ -51,8 +58,9 @@ def _attach_context(request: Request, session) -> None:
 async def get_draft(
     request: Request,
     session_id: Annotated[uuid.UUID, Path()],
-    db: Annotated[AsyncSession, Depends(get_db_session)],
+    db: DbSession,
     tenant_id: Annotated[str, Depends(get_tenant_id)],
+    actor_sub: Annotated[str, Depends(get_actor_sub)],
 ):
     sessions = SessionsRepository(db, tenant_id)
     session = await sessions.get(session_id)
@@ -83,6 +91,15 @@ async def get_draft(
             headers={"Retry-After": "5"},
         )
     if draft.draft_status == "ready":
+        # Export of clinical content is an audited event (Issue #12).
+        await log_event(
+            db,
+            tenant_id=tenant_id,
+            event_type=EVENT_DRAFT_EXPORTED,
+            session_id=session_id,
+            actor_sub=actor_sub or None,
+            payload={"draft_status": "ready", "partial": False},
+        )
         body = DraftReadyOut(
             session_id=session_id,
             content=draft.content or {},
@@ -106,9 +123,11 @@ async def get_draft(
 )
 async def retry_draft(
     request: Request,
+    background_tasks: BackgroundTasks,
     session_id: Annotated[uuid.UUID, Path()],
-    db: Annotated[AsyncSession, Depends(get_db_session)],
+    db: DbSession,
     tenant_id: Annotated[str, Depends(get_tenant_id)],
+    actor_sub: Annotated[str, Depends(get_actor_sub)],
 ) -> DraftRetryOut:
     sessions = SessionsRepository(db, tenant_id)
     session = await sessions.get(session_id)
@@ -136,6 +155,21 @@ async def retry_draft(
             extra={"draft_status": draft.draft_status},
         )
     await drafts.reset_to_pending(draft)
+    await log_event(
+        db,
+        tenant_id=tenant_id,
+        event_type=EVENT_DRAFT_RETRY_REQUESTED,
+        session_id=session_id,
+        actor_sub=actor_sub or None,
+        payload={"retry_count": draft.retry_count},
+    )
+
+    # Re-run materialization; without this the draft would stay pending forever.
+    worker = materialization_worker_for(
+        session, tenant_id=tenant_id, actor_sub=actor_sub or None, stream=get_stream_client()
+    )
+    background_tasks.add_task(worker.run)
+
     return DraftRetryOut(session_id=session_id, retry_count=draft.retry_count)
 
 
@@ -148,8 +182,9 @@ async def submit_feedback(
     request: Request,
     session_id: Annotated[uuid.UUID, Path()],
     payload: DraftFeedbackIn,
-    db: Annotated[AsyncSession, Depends(get_db_session)],
+    db: DbSession,
     tenant_id: Annotated[str, Depends(get_tenant_id)],
+    jwt_actor_sub: Annotated[str, Depends(get_actor_sub)],
 ) -> DraftFeedbackOut:
     sessions = SessionsRepository(db, tenant_id)
     session = await sessions.get(session_id)
@@ -166,6 +201,10 @@ async def submit_feedback(
     else:
         ratio = payload.chars_edited / payload.chars_original
 
+    # The Médico who edited: explicit in the payload (app-provided), else the
+    # JWT ``sub`` of the caller — never an empty bucket shared by everyone.
+    actor_sub = (payload.actor_sub or "").strip() or (jwt_actor_sub or "").strip() or None
+
     with get_tracer().start_as_current_span("submit_feedback") as span:
         span.set_attribute("session_id", str(session_id))
         span.set_attribute("tenant_id", tenant_id)
@@ -178,13 +217,26 @@ async def submit_feedback(
             correction_ratio=ratio,
             fields_corrected=payload.fields_corrected,
             session_kind=session.session_kind,
-            actor_sub=payload.actor_sub,
+            actor_sub=actor_sub,
         )
 
-        draft_correction_ratio_histogram.observe(ratio)
+        draft_correction_ratio_histogram.observe(ratio, tenant_id=tenant_id)
         ks = get_kill_switch()
-        ks.record(payload.actor_sub or "", ratio)
-        if ks.is_active:
-            draft_kill_switch_gauge.set(1.0)
+        if actor_sub:
+            ks.record(actor_sub, ratio)
+        draft_kill_switch_gauge.set(1.0 if ks.is_active else 0.0, tenant_id=tenant_id)
+
+        await log_event(
+            db,
+            tenant_id=tenant_id,
+            event_type=EVENT_DRAFT_FEEDBACK_RECEIVED,
+            session_id=session_id,
+            actor_sub=actor_sub,
+            payload={
+                "correction_ratio": round(ratio, 4),
+                "fields_corrected": len(payload.fields_corrected),
+                "kill_switch_active": ks.is_active,
+            },
+        )
 
     return DraftFeedbackOut(session_id=session_id, correction_ratio=round(ratio, 4))

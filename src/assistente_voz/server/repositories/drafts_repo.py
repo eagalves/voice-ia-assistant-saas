@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ..db.models import Draft
 from .base import TenantRepository
@@ -19,16 +20,28 @@ class DraftsRepository(TenantRepository):
         return result.scalar_one_or_none()
 
     async def insert_pending(self, session_id: uuid.UUID) -> Draft:
-        draft = Draft(
-            id=uuid.uuid4(),
-            tenant_id=self.tenant_id,
-            session_id=session_id,
-            draft_status="pending",
-            partial=False,
-            retry_count=0,
+        """Insert the ``pending`` draft row for a Sessão (idempotent).
+
+        ``INSERT … ON CONFLICT (session_id) DO NOTHING`` so a concurrent
+        ``close`` + auto-finalize race never surfaces a unique violation;
+        the canonical row (ours or the winner's) is returned.
+        """
+        stmt = (
+            pg_insert(Draft)
+            .values(
+                id=uuid.uuid4(),
+                tenant_id=self.tenant_id,
+                session_id=session_id,
+                draft_status="pending",
+                partial=False,
+                retry_count=0,
+            )
+            .on_conflict_do_nothing(constraint="uq_drafts_session_id")
         )
-        self.db.add(draft)
+        await self.db.execute(stmt)
         await self.db.flush()
+        draft = await self.get_by_session(session_id)
+        assert draft is not None  # row exists after insert-or-conflict
         return draft
 
     async def reset_to_pending(self, draft: Draft) -> Draft:
@@ -61,7 +74,7 @@ class DraftsRepository(TenantRepository):
         self,
         session_id: uuid.UUID,
         content: dict[str, Any],
-    ) -> bool:
+    ) -> bool | None:
         """Acquire advisory lock and transition draft pending → ready (exactly-once).
 
         Uses ``pg_advisory_xact_lock`` so that concurrent materialization
@@ -71,6 +84,7 @@ class DraftsRepository(TenantRepository):
         Returns:
             True   — draft transitioned to ``ready``.
             False  — draft was not in ``pending`` state; exited silently.
+            None   — no draft row exists for the session.
         """
         lock_key = f"materialize:{self.tenant_id}:{session_id}"
         await self.db.execute(
@@ -79,7 +93,9 @@ class DraftsRepository(TenantRepository):
         )
 
         draft = await self.get_by_session(session_id)
-        if draft is None or draft.draft_status != "pending":
+        if draft is None:
+            return None
+        if draft.draft_status != "pending":
             return False
 
         draft.draft_status = "ready"
