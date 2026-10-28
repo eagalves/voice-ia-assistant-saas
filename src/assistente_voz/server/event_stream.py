@@ -1,10 +1,12 @@
-"""Redis Stream client abstraction — Issue #3.
+"""Redis Stream client abstraction — Issues #3 and #13.
 
-Production uses ``redis.asyncio`` (not yet a declared dependency — add
-``redis[hiredis]>=5.0`` to ``pyproject.toml`` before Fase 2 go-live).
+Two implementations of the same ``EventStreamClient`` protocol:
 
-Tests inject ``FakeEventStream`` — pure-Python in-memory implementation,
-no external process required.
+* ``FakeEventStream`` — pure-Python in-memory implementation for unit tests
+  and single-process development (no Redis required, no durability, no
+  cross-container visibility).
+* ``RedisEventStream`` — thin adapter over ``redis.asyncio`` used whenever
+  ``REDIS_URL`` is configured (see ``stream_client.get_stream_client``).
 
 Every key passed to these methods MUST be constructed via ``redis_keys.py``
 helpers so the ``{tenant_id}`` hash-tag invariant from Issue #10 is
@@ -12,13 +14,15 @@ respected.
 """
 from __future__ import annotations
 
+import asyncio
 import time
-from typing import Protocol, runtime_checkable
+from collections.abc import AsyncIterator
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class EventStreamClient(Protocol):
-    """Minimal Redis interface required by AudioGateway."""
+    """Minimal Redis interface required by AudioGateway and routers."""
 
     async def xadd(
         self,
@@ -74,17 +78,23 @@ class EventStreamClient(Protocol):
         """Publish a message to a pub/sub channel."""
         ...
 
+    def subscribe(self, channel: str) -> AsyncIterator[str]:
+        """Yield messages published to *channel* (never returns on its own)."""
+        ...
+
 
 class FakeEventStream:
-    """In-memory EventStream for unit tests.
+    """In-memory EventStream for unit tests and single-process dev.
 
-    Thread-safe for use in a single asyncio event loop.  No Redis process
-    required.
+    Safe for use in a single asyncio event loop.  No Redis process required.
 
     Stream IDs have the format ``<ms>-<seq>``, mirroring Redis Streams.
     ID comparisons are done numerically (as (ms, seq) tuples) so that
     ``"T-2" < "T-10" < "T-100"`` — the same ordering Redis uses.
     """
+
+    # Poll interval of the in-memory ``subscribe`` generator (seconds).
+    SUBSCRIBE_POLL_S: float = 0.1
 
     def __init__(self) -> None:
         self._streams: dict[str, list[tuple[str, dict[str, str]]]] = {}
@@ -188,6 +198,21 @@ class FakeEventStream:
         """Append message to the in-memory pub/sub log."""
         self._published.setdefault(channel, []).append(message)
 
+    async def subscribe(self, channel: str) -> AsyncIterator[str]:
+        """Yield messages published to *channel* after subscription time.
+
+        Polls the in-memory log; mirrors the semantics of a Redis
+        ``SUBSCRIBE`` (only messages published after subscribing are seen).
+        """
+        seen_up_to = len(self._published.get(channel, []))
+        while True:
+            messages = self._published.get(channel, [])
+            if len(messages) > seen_up_to:
+                for msg in messages[seen_up_to:]:
+                    yield msg
+                seen_up_to = len(messages)
+            await asyncio.sleep(self.SUBSCRIBE_POLL_S)
+
     # ----------------------------------------------------------------
     # Test helpers
     # ----------------------------------------------------------------
@@ -203,3 +228,105 @@ class FakeEventStream:
     def published_messages(self, channel: str) -> list[str]:
         """Return all messages published to *channel* (for test assertions)."""
         return list(self._published.get(channel, []))
+
+
+class RedisEventStream:
+    """``EventStreamClient`` backed by ``redis.asyncio`` (Issue #13).
+
+    ``decode_responses=True`` so every value crosses the boundary as ``str``,
+    matching ``FakeEventStream``.  Construct with ``RedisEventStream(url)``;
+    the connection pool is created lazily on first use.
+    """
+
+    def __init__(self, url: str, *, client: Any | None = None) -> None:
+        self._url = url
+        self._client = client
+
+    def _redis(self):
+        if self._client is None:
+            import redis.asyncio as redis_asyncio  # deferred import
+
+            self._client = redis_asyncio.from_url(self._url, decode_responses=True)
+        return self._client
+
+    async def ping(self) -> bool:
+        return bool(await self._redis().ping())
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def xadd(
+        self,
+        key: str,
+        fields: dict[str, str],
+        id: str = "*",
+        nx: bool = False,
+    ) -> str | None:
+        # Redis has no XADD NX for explicit IDs; a duplicate explicit ID raises.
+        try:
+            return await self._redis().xadd(key, fields, id=id)
+        except Exception as exc:  # noqa: BLE001
+            if nx and "equal or smaller" in str(exc):
+                return None
+            raise
+
+    async def xrevrange(
+        self,
+        key: str,
+        max_id: str = "+",
+        min_id: str = "-",
+        count: int | None = None,
+    ) -> list[tuple[str, dict[str, str]]]:
+        rows = await self._redis().xrevrange(key, max=max_id, min=min_id, count=count)
+        return [(str(eid), dict(fields)) for eid, fields in rows]
+
+    async def xrange(
+        self,
+        key: str,
+        min_id: str = "-",
+        max_id: str = "+",
+        count: int | None = None,
+    ) -> list[tuple[str, dict[str, str]]]:
+        rows = await self._redis().xrange(key, min=min_id, max=max_id, count=count)
+        return [(str(eid), dict(fields)) for eid, fields in rows]
+
+    async def xlen(self, key: str) -> int:
+        return int(await self._redis().xlen(key))
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        await self._redis().set(key, value, ex=ex)
+
+    async def get(self, key: str) -> str | None:
+        value = await self._redis().get(key)
+        return None if value is None else str(value)
+
+    async def expire(self, key: str, seconds: int) -> None:
+        await self._redis().expire(key, seconds)
+
+    async def delete(self, key: str) -> None:
+        await self._redis().delete(key)
+
+    async def publish(self, channel: str, message: str) -> None:
+        await self._redis().publish(channel, message)
+
+    async def subscribe(self, channel: str) -> AsyncIterator[str]:
+        pubsub = self._redis().pubsub()
+        await pubsub.subscribe(channel)
+        try:
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg is None:
+                    await asyncio.sleep(0)  # yield control; keeps cancellation responsive
+                    continue
+                data = msg.get("data")
+                if data is None:
+                    continue
+                yield data if isinstance(data, str) else data.decode()
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+                await pubsub.aclose()
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                pass

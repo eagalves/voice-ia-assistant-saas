@@ -16,13 +16,15 @@ dependencies = [
   "google-genai>=0.6.0",
   "sounddevice>=0.4.6",
   "numpy>=1.26",
-  "fastapi>=0.115",
+  "fastapi>=0.121",
   "uvicorn[standard]>=0.30",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
   "sqlalchemy[asyncio]>=2.0.30",
   "asyncpg>=0.29",
   "alembic>=1.13",
+  "redis>=5.0",
+  "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -45,4 +47,5 @@ asyncio_mode = "auto"
 markers = [
   "stt_real: transcricao real com faster-whisper sobre fixtures de audio (lento; pular com -m 'not stt_real')",
   "llm_real: integracao real com LLM local (Ollama); skip automatico quando indisponivel",
+  "redis_real: integracao real com Redis (TEST_REDIS_URL); skip automatico quando indisponivel",
 ]

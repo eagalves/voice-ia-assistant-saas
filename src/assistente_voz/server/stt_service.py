@@ -1,9 +1,20 @@
-"""STT streaming service with confidence threshold and circuit breaker — Issue #4.
+"""STT streaming service with confidence threshold and circuit breaker — Issues #4, #7, #14.
 
 Architecture
 ------------
 Primary backend:  Deepgram Nova-2 streaming pt-BR (StreamingSTTBackend protocol).
 Fallback backend: OpenAI Whisper API batch (BatchSTTBackend protocol).
+
+Neither managed provider is wired yet (needs DPA + credentials — Issue #12).
+What exists today, selected by ``STT_SERVER_BACKEND`` through
+``build_stt_service``:
+
+* ``fake``          — deterministic test doubles (``FakeStreamingBackend`` /
+                      ``FakeBatchBackend``);
+* ``local_whisper`` — the MVP ``FasterWhisperBackend`` (CPU) exposed as a
+                      batch backend; the "streaming" side is a
+                      ``BatchOnlyStreamingBackend`` adapter so the circuit
+                      breaker and status events keep the same semantics.
 
 Confidence policy
 -----------------
@@ -42,6 +53,12 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Protocol
 
+from .metrics import (
+    stt_circuit_state_gauge,
+    stt_fallback_total,
+    stt_segment_duration_ms_histogram,
+)
+
 _logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -54,6 +71,14 @@ DEEPGRAM_TIMEOUT_S: float = 0.8      # per-chunk timeout for streaming backend
 CB_FAILURE_THRESHOLD: int = 3        # consecutive failures to open circuit breaker
 CB_HEALTH_THRESHOLD: int = 5         # consecutive OK probes to close circuit breaker
 CB_MIN_OPEN_DURATION_S: float = 60.0  # minimum seconds in open state before recovery
+
+# Local CPU Whisper is batch by nature; a 4 s window takes seconds on CPU.
+LOCAL_WHISPER_TIMEOUT_S: float = 120.0
+
+BACKEND_OFF = "off"
+BACKEND_FAKE = "fake"
+BACKEND_LOCAL_WHISPER = "local_whisper"
+SUPPORTED_BACKENDS: tuple[str, ...] = (BACKEND_OFF, BACKEND_FAKE, BACKEND_LOCAL_WHISPER)
 
 
 # ── CircuitBreakerConfig ──────────────────────────────────────────────────────
@@ -245,10 +270,12 @@ class STTCircuitBreaker:
     def is_open(self) -> bool:
         return self._state == _CBState.OPEN
 
+    @property
+    def config(self) -> CircuitBreakerConfig:
+        return self._config
+
     def record_failure(self) -> bool:
         """Record one Deepgram failure.  Returns True if CB just opened."""
-        from .metrics import stt_circuit_state_gauge  # lazy to avoid circular
-
         self._consecutive_health_ok = 0
         if self._state == _CBState.CLOSED:
             self._consecutive_failures += 1
@@ -269,8 +296,6 @@ class STTCircuitBreaker:
 
         Only considers closing if the minimum open duration has elapsed.
         """
-        from .metrics import stt_circuit_state_gauge  # lazy to avoid circular
-
         if not self.is_open or self._opened_at is None:
             return False
         if self._clock() - self._opened_at < self._config.fallback_min_window_s:
@@ -317,6 +342,7 @@ class STTStreamService:
         on_ws_status: Callable[[dict], None] | None = None,
         _circuit_breaker: STTCircuitBreaker | None = None,
         _timeout_s: float = DEEPGRAM_TIMEOUT_S,
+        tenant_id: str | None = None,
     ) -> None:
         self._streaming = streaming_backend
         self._batch = batch_backend
@@ -326,11 +352,19 @@ class STTStreamService:
         self._on_ws_status = on_ws_status
         self._cb = _circuit_breaker or STTCircuitBreaker()
         self._timeout_s = _timeout_s
+        self._tenant_id = tenant_id
 
     @property
     def is_degraded(self) -> bool:
         """True when circuit breaker is open and Whisper batch is in use."""
         return self._cb.is_open
+
+    @property
+    def circuit_breaker(self) -> STTCircuitBreaker:
+        return self._cb
+
+    def _metric_tenant(self) -> dict:
+        return {"tenant_id": self._tenant_id} if self._tenant_id else {}
 
     async def process_chunk(
         self,
@@ -339,6 +373,7 @@ class STTStreamService:
         *,
         on_partial: Callable[[STTEvent], None] | None = None,
         on_final: Callable[[STTEvent], None],
+        sample_rate: int = 16000,
     ) -> None:
         """Process one audio buffer through the appropriate backend.
 
@@ -352,55 +387,65 @@ class STTStreamService:
             else on_partial
         )
 
-        if self._cb.is_open:
-            await self._run_batch(audio_bytes, speaker, on_final)
-            return
-
-        # Try Deepgram streaming with timeout
-        collected: list[STTEvent] = []
-
-        async def _single_chunk() -> AsyncIterator[bytes]:
-            yield audio_bytes
-
+        t0 = time.perf_counter()
         try:
-            await asyncio.wait_for(
-                self._streaming.stream(
-                    _single_chunk(),
-                    speaker,
-                    effective_on_partial,
-                    collected.append,
-                ),
-                timeout=self._timeout_s,
-            )
-            self._cb.record_success()
-            for event in collected:
-                event.uncertain = event.confidence < self._confidence_threshold
-                on_final(event)
+            if self._cb.is_open:
+                stt_fallback_total.inc(reason="circuit_open", **self._metric_tenant())
+                await self._run_batch(audio_bytes, speaker, on_final, sample_rate)
+                return
 
-        except Exception:
-            just_opened = self._cb.record_failure()
-            if just_opened and self._on_ws_status is not None:
-                self._on_ws_status(
-                    {"type": "status", "stt_mode": "fallback_batch", "reason": "circuit_open"}
+            # Try Deepgram streaming with timeout
+            collected: list[STTEvent] = []
+
+            async def _single_chunk() -> AsyncIterator[bytes]:
+                yield audio_bytes
+
+            try:
+                await asyncio.wait_for(
+                    self._streaming.stream(
+                        _single_chunk(),
+                        speaker,
+                        effective_on_partial,
+                        collected.append,
+                        sample_rate,
+                    ),
+                    timeout=self._timeout_s,
                 )
-            await self._run_batch(audio_bytes, speaker, on_final)
+                self._cb.record_success()
+                for event in collected:
+                    event.uncertain = event.confidence < self._confidence_threshold
+                    on_final(event)
+
+            except Exception as exc:  # noqa: BLE001 — any backend failure → fallback
+                reason = "timeout" if isinstance(exc, asyncio.TimeoutError) else "connection"
+                stt_fallback_total.inc(reason=reason, **self._metric_tenant())
+                just_opened = self._cb.record_failure()
+                if just_opened and self._on_ws_status is not None:
+                    self._on_ws_status(
+                        {"type": "status", "stt_mode": "fallback_batch", "reason": "circuit_open"}
+                    )
+                await self._run_batch(audio_bytes, speaker, on_final, sample_rate)
+        finally:
+            stt_segment_duration_ms_histogram.observe(
+                (time.perf_counter() - t0) * 1000.0, **self._metric_tenant()
+            )
 
     async def _run_batch(
         self,
         audio_bytes: bytes,
         speaker: str | None,
         on_final: Callable[[STTEvent], None],
+        sample_rate: int = 16000,
     ) -> None:
-        event = await self._batch.transcribe_batch(audio_bytes, speaker)
+        event = await self._batch.transcribe_batch(audio_bytes, speaker, sample_rate)
         event.uncertain = event.confidence < self._confidence_threshold
         on_final(event)
 
     async def run_health_probe(self) -> None:
         """Execute one Deepgram health probe.
 
-        Call from a periodic background task (e.g. ``asyncio.create_task``
-        with a 12-second interval) while the circuit breaker is open.
-        No-op when CB is already closed.
+        Call from a periodic background task (see ``run_probe_loop``) while
+        the circuit breaker is open.  No-op when CB is already closed.
         """
         if not self._cb.is_open:
             return
@@ -413,6 +458,19 @@ class STTStreamService:
                 )
         else:
             self._cb.record_health_fail()
+
+    async def run_probe_loop(self, interval_s: float | None = None) -> None:
+        """Periodic probe loop; cancel the task to stop it."""
+        interval = interval_s if interval_s is not None else float(
+            self._cb.config.probe_interval_s
+        )
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.run_health_probe()
+            except Exception as exc:  # noqa: BLE001 — probe errors never kill the loop
+                _logger.debug("STT health probe raised: %s", exc)
+                self._cb.record_health_fail()
 
 
 # ── Test doubles ──────────────────────────────────────────────────────────────
@@ -505,3 +563,126 @@ class FakeBatchBackend:
             speaker=speaker,
             uncertain=False,
         )
+
+
+# ── Production-usable backends without managed providers (Issue #14) ──────────
+
+class BatchOnlyStreamingBackend:
+    """Serve the ``StreamingSTTBackend`` protocol from a batch backend.
+
+    Lets the circuit breaker / status-event machinery run unchanged when the
+    only transcriber available is batch (local Whisper). Each ``stream`` call
+    concatenates the chunks and emits exactly one final event.
+    """
+
+    def __init__(self, batch: BatchSTTBackend) -> None:
+        self._batch = batch
+
+    async def stream(
+        self,
+        audio_chunks: AsyncIterator[bytes],
+        speaker: str | None,
+        on_partial: Callable[[STTEvent], None] | None,
+        on_final: Callable[[STTEvent], None],
+        sample_rate: int = 16000,
+    ) -> None:
+        buf = b"".join([chunk async for chunk in audio_chunks])
+        event = await self._batch.transcribe_batch(buf, speaker, sample_rate)
+        on_final(event)
+
+    async def health_check(self) -> bool:
+        return True
+
+
+class LocalWhisperBatchBackend:
+    """``BatchSTTBackend`` over the MVP ``FasterWhisperBackend`` (CPU).
+
+    The model call is blocking and CPU-bound, so it runs in a worker thread
+    (``asyncio.to_thread``) to keep the event loop (WS frames, other
+    Sessões) responsive. Model instances are cached per process by
+    ``assistente_voz.stt``.
+    """
+
+    def __init__(self, backend=None, language: str = "pt") -> None:
+        self._backend = backend
+        self._language = language
+
+    def _load(self):
+        if self._backend is None:
+            from assistente_voz.stt import FasterWhisperBackend  # deferred import
+
+            self._backend = FasterWhisperBackend.from_env()
+        return self._backend
+
+    async def transcribe_batch(
+        self,
+        audio_bytes: bytes,
+        speaker: str | None = None,
+        sample_rate: int = 16000,
+    ) -> STTEvent:
+        backend = self._load()
+        text, confidence = await asyncio.to_thread(
+            backend.transcribe, audio_bytes, self._language, sample_rate
+        )
+        return STTEvent(
+            text=text.strip(),
+            confidence=float(confidence),
+            is_final=True,
+            event_id=str(uuid.uuid4()),
+            speaker=speaker,
+            uncertain=False,
+        )
+
+
+def medical_partial_enabled_from_env() -> bool:
+    return os.getenv("MEDICAL_STT_PARTIAL_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def build_stt_service(
+    backend_kind: str,
+    *,
+    is_medical: bool,
+    on_ws_status: Callable[[dict], None] | None = None,
+    tenant_id: str | None = None,
+    medical_partial_enabled: bool | None = None,
+) -> STTStreamService | None:
+    """Build the server STT service for one WS connection, or ``None`` when off.
+
+    ``backend_kind`` is ``STT_SERVER_BACKEND``: ``off`` | ``fake`` |
+    ``local_whisper``. Unknown values raise ``ValueError`` (fail-fast at
+    connection time, logged by the router).
+    """
+    kind = (backend_kind or BACKEND_OFF).strip().lower()
+    if kind in {"", BACKEND_OFF, "none", "0", "false"}:
+        return None
+    if kind not in SUPPORTED_BACKENDS:
+        raise ValueError(
+            f"STT_SERVER_BACKEND={backend_kind!r} not supported; use one of {SUPPORTED_BACKENDS}"
+        )
+
+    config = CircuitBreakerConfig.from_env()
+    if kind == BACKEND_FAKE:
+        streaming: StreamingSTTBackend = FakeStreamingBackend()
+        batch: BatchSTTBackend = FakeBatchBackend()
+        timeout_s = config.timeout_s
+    else:  # local_whisper
+        batch = LocalWhisperBatchBackend(language=os.getenv("STT_LANGUAGE", "pt"))
+        streaming = BatchOnlyStreamingBackend(batch)
+        timeout_s = LOCAL_WHISPER_TIMEOUT_S
+
+    partial = (
+        medical_partial_enabled
+        if medical_partial_enabled is not None
+        else medical_partial_enabled_from_env()
+    )
+    return STTStreamService(
+        streaming,
+        batch,
+        confidence_threshold=get_confidence_threshold(),
+        is_medical=is_medical,
+        medical_partial_enabled=partial,
+        on_ws_status=on_ws_status,
+        _circuit_breaker=STTCircuitBreaker(config=config),
+        _timeout_s=timeout_s,
+        tenant_id=tenant_id,
+    )

@@ -1,4 +1,4 @@
-"""AudioGateway — WebSocket audio ingestion layer — Issue #3.
+"""AudioGateway — WebSocket audio ingestion layer — Issues #3, #13, #14.
 
 One ``AudioGateway`` instance per WebSocket connection (one speaker stream
 per Sessão).  Manages:
@@ -6,17 +6,26 @@ per Sessão).  Manages:
 - Bounded in-memory frame queue (50 frames = 1 s at Opus 20 ms)
 - ``seq`` tracking and late-arrival detection (200 ms watermark)
 - Push to Redis Streams with ``server_timestamp_ms``
-- Server-side deduplication via ``event_id`` (XADD NX)
+- Server-side deduplication: ``event_id`` is **deterministic**
+  (``uuid5(session_id, "{speaker}:{seq}")``) and a per-speaker set of seen
+  ``seq`` values (lazily loaded from the stream on reconnect) drops resent
+  frames — the at-least-once guarantee of the reconnect protocol
 - Reconnect handshake: returns ``last_seq`` and ``last_event_id`` from Stream
 - Periodic state snapshot (100 events / 5 min; 25 events / 1 min for medical)
 - Snapshot + delta restore after crash
+- Optional consumer task draining the frame queue into a handler
+  (``SessionTranscriber`` in production); without a consumer frames are
+  logged to the stream and dropped from the STT queue once it is full
+  (``STT_OVERFLOW``)
+- ``record_transcript`` — appends a ``type=transcript`` entry (text +
+  confidence) to the same stream that the draft materializer reads
 
 Opus decoding is injectable (``OpusDecoderLike`` protocol).  Tests inject
 ``PassthroughDecoder``; production code can plug in ``opuslib`` when
-available.
+available (frames are treated as PCM16 LE @ 16 kHz until then).
 
 Redis is injected as ``EventStreamClient``.  Tests use ``FakeEventStream``;
-production wires ``redis.asyncio`` (add ``redis[hiredis]>=5.0`` to deps).
+production wires ``RedisEventStream`` (``REDIS_URL``).
 """
 from __future__ import annotations
 
@@ -25,11 +34,13 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 from .drain import get_drain_manager
 from .event_stream import EventStreamClient, FakeEventStream
+from .metrics import events_late_arrival_ratio_gauge
 from .redis_keys import session_events_key, session_state_key
 
 logger = logging.getLogger(__name__)
@@ -53,6 +64,12 @@ SNAPSHOT_INTERVAL_S_MEDICAL: int = 60   # 1 min
 # Redis Stream TTL after session close
 STREAM_TTL_SECONDS: int = 86400  # 24 h
 
+ENTRY_TYPE_FRAME = "frame"
+ENTRY_TYPE_TRANSCRIPT = "transcript"
+
+# Namespace for deterministic frame event_ids (uuid5).
+_EVENT_ID_NAMESPACE = uuid.UUID("5b2c0b6e-1b1f-4e8f-9a4e-3f1d0c7a9e11")
+
 
 # ── Opus decoder protocol ────────────────────────────────────────────────────
 
@@ -69,7 +86,8 @@ class PassthroughDecoder:
     """Returns the input unchanged.
 
     Used in tests (no native Opus library required) and as a stand-in
-    until ``opuslib`` is added to the production dependencies.
+    until ``opuslib`` is added to the production dependencies — clients
+    send PCM16 LE @ 16 kHz mono frames meanwhile.
     """
 
     def decode(self, opus_bytes: bytes, frame_size: int = 320) -> bytes:
@@ -93,6 +111,10 @@ class ProcessResult:
     stream_id: str | None  # Redis Stream ID assigned (None if overflow)
     late_arrival: bool
     overflow: bool
+    duplicate: bool = False  # frame already in the stream (resent after reconnect)
+
+
+FrameHandler = Callable[[AudioFrame], Awaitable[None]]
 
 
 # ── AudioGateway ─────────────────────────────────────────────────────────────
@@ -128,6 +150,9 @@ class AudioGateway:
         self._last_event_id: str = ""
         self._watermark_ms: int = 0
 
+        # Dedupe (per speaker) — lazily loaded from the stream on first frame
+        self._seen_seqs: set[int] | None = None
+
         # Event log (mirrors what's in the Redis Stream — used for snapshot)
         self._events: list[dict] = []
         self._event_count: int = 0
@@ -148,6 +173,10 @@ class AudioGateway:
         # Metrics
         self._late_arrival_count: int = 0
         self._total_frames_seen: int = 0
+        self._duplicate_count: int = 0
+
+        # Consumer
+        self._consumer_task: asyncio.Task | None = None
 
     # ── Keys ─────────────────────────────────────────────────────────────────
 
@@ -166,6 +195,32 @@ class AudioGateway:
             return 0.0
         return self._late_arrival_count / self._total_frames_seen
 
+    @property
+    def duplicate_count(self) -> int:
+        return self._duplicate_count
+
+    # ── Dedupe ───────────────────────────────────────────────────────────────
+
+    def frame_event_id(self, seq: int) -> str:
+        """Deterministic event_id for (session, speaker, seq)."""
+        return str(uuid.uuid5(_EVENT_ID_NAMESPACE, f"{self.session_id}:{self.speaker}:{seq}"))
+
+    async def _ensure_seen_loaded(self) -> None:
+        if self._seen_seqs is not None:
+            return
+        seen: set[int] = set()
+        entries = await self._stream.xrange(self._events_key())
+        for _, fields in entries:
+            if fields.get("type", ENTRY_TYPE_FRAME) != ENTRY_TYPE_FRAME:
+                continue
+            if fields.get("speaker") != self.speaker:
+                continue
+            try:
+                seen.add(int(fields.get("seq", -1)))
+            except ValueError:
+                continue
+        self._seen_seqs = seen
+
     # ── Core frame processing ────────────────────────────────────────────────
 
     async def process_frame(
@@ -180,12 +235,30 @@ class AudioGateway:
         queue is full.  The caller must send an ``STT_OVERFLOW`` WS message
         and NOT close the WebSocket.
 
+        ``duplicate=True`` means a frame with this ``seq`` (same speaker) is
+        already in the stream — it is neither queued nor logged again.
+
         Late arrival is determined by comparing ``timestamp_ms`` to the
         rolling watermark: if ``timestamp_ms < watermark − 200 ms`` the
         frame is marked ``late_arrival=True``.
         """
         if timestamp_ms is None:
             timestamp_ms = int(time.time() * 1000)
+
+        await self._ensure_seen_loaded()
+        assert self._seen_seqs is not None
+        event_id = self.frame_event_id(seq)
+
+        if seq in self._seen_seqs:
+            self._duplicate_count += 1
+            return ProcessResult(
+                pcm_bytes=b"",
+                event_id=event_id,
+                stream_id=None,
+                late_arrival=False,
+                overflow=False,
+                duplicate=True,
+            )
 
         # Decode Opus → PCM
         pcm = self._decoder.decode(frame_data)
@@ -204,8 +277,7 @@ class AudioGateway:
 
         self._total_frames_seen += 1
         self._last_seq = seq
-
-        event_id = str(uuid.uuid4())
+        self._seen_seqs.add(seq)
 
         # Queue frame for local STT (bounded).  Overflow drops the frame from
         # the *STT pipeline* but we still record it in the Redis Stream so
@@ -220,6 +292,7 @@ class AudioGateway:
 
         # Always push to Redis Stream (stream is the authoritative log)
         fields = {
+            "type": ENTRY_TYPE_FRAME,
             "seq": str(seq),
             "event_id": event_id,
             "speaker": self.speaker,
@@ -240,6 +313,8 @@ class AudioGateway:
             )
             self._event_count += 1
 
+        events_late_arrival_ratio_gauge.set(self.late_arrival_ratio, tenant_id=self.tenant_id)
+
         # Snapshot check
         if self._event_count > 0:
             now = time.monotonic()
@@ -257,14 +332,76 @@ class AudioGateway:
             late_arrival=late_arrival,
             overflow=overflow,
         )
+
+    # ── Transcript events ────────────────────────────────────────────────────
+
+    async def record_transcript(
+        self,
+        *,
+        event_id: str,
+        text: str,
+        confidence: float,
+        uncertain: bool,
+        timestamp_ms: int,
+        seq_from: int | None = None,
+        seq_to: int | None = None,
+        red_flags: list[str] | None = None,
+    ) -> str | None:
+        """Append a ``transcript`` entry (text + metadata) to the Sessão stream."""
+        fields = {
+            "type": ENTRY_TYPE_TRANSCRIPT,
+            "event_id": event_id,
+            "speaker": self.speaker,
+            "text": text,
+            "confidence": f"{confidence:.4f}",
+            "uncertain": str(bool(uncertain)).lower(),
+            "server_timestamp_ms": str(timestamp_ms),
+            "seq_from": str(seq_from if seq_from is not None else -1),
+            "seq_to": str(seq_to if seq_to is not None else -1),
+            "red_flags": ",".join(red_flags or []),
+        }
+        return await self._stream.xadd(self._events_key(), fields)
+
+    # ── Consumer ─────────────────────────────────────────────────────────────
+
+    def start_consumer(self, handler: FrameHandler) -> asyncio.Task:
+        """Drain the frame queue into *handler* in a background task."""
+        if self._consumer_task is not None and not self._consumer_task.done():
+            raise RuntimeError("consumer already running")
+        self._consumer_task = asyncio.create_task(self._consume(handler))
+        return self._consumer_task
+
+    async def _consume(self, handler: FrameHandler) -> None:
+        while True:
+            frame = await self._queue.get()
+            try:
+                await handler(frame)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — one bad frame must not kill the stream
+                logger.exception("AudioGateway consumer: handler failed for seq=%s", frame.seq)
+            finally:
+                self._queue.task_done()
+
+    async def stop_consumer(self) -> None:
+        task = self._consumer_task
+        self._consumer_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
     # ── Reconnect handshake ──────────────────────────────────────────────────
 
     async def reconnect_handshake(self) -> dict:
         """Return the handshake payload for a reconnecting client.
 
-        Reads the most recent Redis Stream entry to get ``last_seq`` and
-        ``last_event_id``.  The client should resend only frames with
-        ``seq > last_seq``.
+        Reads the most recent *frame* entry of this speaker from the Redis
+        Stream to get ``last_seq`` and ``last_event_id``. The client should
+        resend only frames with ``seq > last_seq``.
 
         Returns::
 
@@ -274,9 +411,12 @@ class AudioGateway:
                 "last_seq": 42,
             }
         """
-        entries = await self._stream.xrevrange(self._events_key(), count=1)
-        if entries:
-            last_stream_id, fields = entries[0]
+        entries = await self._stream.xrevrange(self._events_key())
+        for last_stream_id, fields in entries:
+            if fields.get("type", ENTRY_TYPE_FRAME) != ENTRY_TYPE_FRAME:
+                continue
+            if fields.get("speaker", self.speaker) != self.speaker:
+                continue
             last_seq = int(fields.get("seq", -1))
             return {
                 "type": "session_resumed",
@@ -307,6 +447,18 @@ class AudioGateway:
             self._event_count,
         )
 
+    @staticmethod
+    def _frame_entry(entry_id: str, fields: dict[str, str]) -> dict | None:
+        if fields.get("type", ENTRY_TYPE_FRAME) != ENTRY_TYPE_FRAME:
+            return None
+        return {
+            "event_id": fields.get("event_id", ""),
+            "seq": int(fields.get("seq", -1)),
+            "timestamp_ms": int(fields.get("server_timestamp_ms", 0)),
+            "late_arrival": fields.get("late_arrival", "false") == "true",
+            "stream_id": entry_id,
+        }
+
     async def restore_from_snapshot(self) -> bool:
         """Load state snapshot + stream delta after a crash.
 
@@ -327,18 +479,9 @@ class AudioGateway:
             if not entries:
                 return False
             for entry_id, fields in entries:
-                self._events.append(
-                    {
-                        "event_id": fields.get("event_id", ""),
-                        "seq": int(fields.get("seq", -1)),
-                        "timestamp_ms": int(
-                            fields.get("server_timestamp_ms", 0)
-                        ),
-                        "late_arrival": fields.get("late_arrival", "false")
-                        == "true",
-                        "stream_id": entry_id,
-                    }
-                )
+                frame = self._frame_entry(entry_id, fields)
+                if frame is not None:
+                    self._events.append(frame)
             self._event_count = len(self._events)
             if self._events:
                 self._last_seq = self._events[-1]["seq"]
@@ -358,18 +501,9 @@ class AudioGateway:
             )
             # Skip the first entry — it equals the snapshot's last_event_id
             for entry_id, fields in delta[1:]:
-                self._events.append(
-                    {
-                        "event_id": fields.get("event_id", ""),
-                        "seq": int(fields.get("seq", -1)),
-                        "timestamp_ms": int(
-                            fields.get("server_timestamp_ms", 0)
-                        ),
-                        "late_arrival": fields.get("late_arrival", "false")
-                        == "true",
-                        "stream_id": entry_id,
-                    }
-                )
+                frame = self._frame_entry(entry_id, fields)
+                if frame is not None:
+                    self._events.append(frame)
             self._event_count = len(self._events)
             if self._events:
                 self._last_seq = self._events[-1]["seq"]
@@ -380,7 +514,7 @@ class AudioGateway:
     # ── Drain integration ────────────────────────────────────────────────────
 
     def register_drain_callback(
-        self, conn_id: str, send_drain: "Callable[[], Awaitable[None]]"
+        self, conn_id: str, send_drain: Callable[[], Awaitable[None]]
     ) -> None:
         """Register ``send_drain`` with the global DrainManager."""
         get_drain_manager().register(conn_id, send_drain)
@@ -393,8 +527,9 @@ class AudioGateway:
     async def close(self) -> None:
         """Mark session as closed: set STREAM_TTL_SECONDS TTL on the stream key.
 
-        Called by the router after ``POST /v1/sessions/{id}/close`` succeeds.
-        Delegates to ``set_stream_ttl()`` for a single source of truth.
+        ``POST /v1/sessions/{id}/close`` sets the same TTL through
+        ``session_lifecycle.close_session_tx``; this method keeps the
+        gateway-side contract for callers that own a gateway instance.
         """
         await self.set_stream_ttl()
 
